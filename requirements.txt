@@ -1,0 +1,10 @@
+insightface
+onnxruntime-gpu
+scikit-learn
+opencv-python
+PyYAML
+numpy
+fastapi
+uvicorn
+pydantic
+accelerate

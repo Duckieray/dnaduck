@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local runtime/state
+dnaduck.sqlite3
+dnaduck.sqlite3-shm
+dnaduck.sqlite3-wal
+dnaduck_output/
+*.log
+*.tmp
+
+# Trainer and model assets (large/local-only)
+trainer/sd-scripts/
+models/base/
+checkpoints/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

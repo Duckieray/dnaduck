@@ -1,0 +1,9 @@
+{
+  "id": "dnaduck",
+  "name": "DNADuck",
+  "description": "Identity clustering, labeling, and LoRA dataset export.",
+  "entry": "index.html",
+  "order": 30,
+  "backend": "backend.py"
+}
+

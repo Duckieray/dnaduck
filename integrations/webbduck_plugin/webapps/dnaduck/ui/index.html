@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DNADuck</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="nova-app">
+    <header class="nova-topbar">
+      <div class="nova-brand">
+        <span class="nova-brand-mark">DD</span>
+        <div class="nova-brand-copy">
+          <strong>DNADuck</strong>
+          <span>Character Organizer</span>
+        </div>
+      </div>
+
+      <nav class="nova-tabs" aria-label="DNADuck views">
+        <button class="nav-tab active" data-view="studio" type="button">Studio</button>
+        <button class="nav-tab" data-view="identities" type="button">Characters</button>
+      </nav>
+
+      <div class="nova-topbar-right">
+        <button class="btn btn-secondary btn-sm" id="refresh-all-btn" type="button">Refresh</button>
+        <div class="nova-status-pill">
+          <span class="status-indicator" id="status-indicator"></span>
+          <span id="connection-info">Checking connection...</span>
+        </div>
+      </div>
+    </header>
+
+    <div class="view-container">
+      <section class="view active" id="view-studio">
+        <div class="nova-studio-grid">
+          <aside class="nova-controls">
+            <div class="nova-controls-scroll">
+              <section class="nova-block callout">
+                <div class="nova-block-title">Captioning</div>
+                <div class="nova-block-body">
+                  <p><strong>Current:</strong> character-name captions only (<code>.txt</code> sidecars).</p>
+                  <p><strong>Rich descriptive captions:</strong> <span class="coming-soon">Coming Soon</span>.</p>
+                  <p class="muted">Remote connection settings live in WebbDuck Settings.</p>
+                </div>
+              </section>
+
+              <section class="nova-block">
+                <div class="nova-block-title">1. Find Similar Faces</div>
+                <div class="nova-block-body form-stack">
+                  <label class="form-label" for="input-folder">Image Folder (optional)</label>
+                  <input class="input" id="input-folder" type="text" placeholder="/path/to/images" />
+
+                  <label class="form-label" for="output-folder">Output Folder (optional)</label>
+                  <input class="input" id="output-folder" type="text" placeholder="/path/to/dnaduck_output" />
+
+                  <div class="actions">
+                    <button id="scan-btn" class="btn btn-primary" type="button">Find Similar Faces</button>
+                    <button id="scan-recluster-btn" class="btn btn-secondary" type="button">Start Fresh (Rebuild)</button>
+                  </div>
+                </div>
+              </section>
+
+              <section class="nova-block">
+                <div class="nova-block-title">2. Prepare and Train</div>
+                <div class="nova-block-body form-stack">
+                  <p class="muted">Exports currently use character-name captions only.</p>
+
+                  <label class="form-label" for="min-images">Minimum Photos per Character</label>
+                  <input class="input" id="min-images" type="number" min="1" value="5" />
+                  <label class="form-label toggle-row" for="use-selected-only">
+                    <input id="use-selected-only" type="checkbox" checked />
+                    Use only selected character groups
+                  </label>
+                  <p class="muted status-note" id="selected-export-summary">
+                    No character groups selected yet. Open Characters and pick the ones you want.
+                  </p>
+
+                  <div class="actions">
+                    <button id="export-btn" class="btn btn-primary" type="button">Prepare Training Set</button>
+                    <button id="train-btn" class="btn btn-secondary" type="button">Start Training</button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </aside>
+
+          <section class="nova-workspace">
+            <section class="nova-block workspace-panel">
+              <div class="nova-block-title">Quick Start</div>
+              <div class="nova-block-body">
+                <ol class="quickstart-list">
+                  <li>Pick your image folder and click Find Similar Faces.</li>
+                  <li>Open Characters to review and name each person.</li>
+                  <li>Remove mistakes or hide photos you never want matched again.</li>
+                  <li>Prepare a training set when your character groups look good.</li>
+                </ol>
+              </div>
+            </section>
+
+            <section class="nova-block workspace-panel">
+              <div class="nova-block-title">Live Activity</div>
+              <div class="nova-block-body">
+                <div class="activity-row">
+                  <span class="activity-dot" id="activity-dot"></span>
+                  <strong id="activity-state">Idle</strong>
+                </div>
+                <p class="muted" id="activity-message">No operation running.</p>
+                <p class="muted" id="activity-elapsed"></p>
+                <p class="muted" id="activity-progress">No active work.</p>
+                <div class="progress-track" aria-hidden="true">
+                  <span id="activity-progress-bar" class="progress-bar"></span>
+                </div>
+              </div>
+            </section>
+
+            <section class="nova-block workspace-panel">
+              <div class="nova-block-title">Session Snapshot</div>
+              <div class="nova-block-body">
+                <div class="stats-grid">
+                  <article class="stat-card">
+                    <span class="stat-label">Faces Found</span>
+                    <strong class="stat-value" id="stat-faces-found">0</strong>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-label">Newly Processed</span>
+                    <strong class="stat-value" id="stat-new-processed">0</strong>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-label">People Grouped</span>
+                    <strong class="stat-value" id="stat-identities">0</strong>
+                  </article>
+                  <article class="stat-card">
+                    <span class="stat-label">Needs Review</span>
+                    <strong class="stat-value" id="stat-review-count">0</strong>
+                  </article>
+                </div>
+                <p class="muted status-note">
+                  Needs Review = files with no face found, plus outliers that did not match a clean group.
+                </p>
+                <p class="muted status-note" id="connection-summary">Engine status will appear here.</p>
+              </div>
+            </section>
+
+            <section class="nova-block workspace-panel">
+              <div class="nova-block-title">Latest Update</div>
+              <div class="nova-block-body">
+                <p class="muted status-note" id="last-action-text">No actions yet.</p>
+                <ul id="event-feed" class="event-feed" aria-live="polite"></ul>
+              </div>
+            </section>
+
+            <section class="nova-block workspace-panel">
+              <div class="nova-block-title">Training Status</div>
+              <div class="nova-block-body">
+                <p class="muted status-note" id="training-status">Waiting for export or training action.</p>
+              </div>
+            </section>
+          </section>
+        </div>
+      </section>
+
+      <section class="view" id="view-identities">
+        <section class="nova-block identity-block">
+          <div class="identity-head">
+            <div>
+              <h2>Characters</h2>
+              <p class="muted">Review grouped faces and keep only clean character sets.</p>
+            </div>
+            <div class="identity-controls">
+              <label class="form-label inline" for="min-members">Minimum Photos</label>
+              <input class="input small" id="min-members" type="number" min="0" value="1" />
+              <button id="select-visible-btn" class="btn btn-secondary" type="button">Select Visible</button>
+              <button id="clear-selected-btn" class="btn btn-secondary" type="button">Clear Selected</button>
+              <button id="refresh-identities-btn" class="btn btn-secondary" type="button">Refresh Characters</button>
+            </div>
+          </div>
+
+          <div class="identity-layout">
+            <div class="table-wrap">
+              <table id="identity-table">
+                <thead>
+                  <tr>
+                    <th>Select</th>
+                    <th>Group</th>
+                    <th>Photos</th>
+                    <th>Name</th>
+                    <th>Updated</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+
+            <aside class="identity-detail">
+              <div class="identity-detail-head">
+                <h3>Character Detail</h3>
+                <div class="identity-detail-controls">
+                  <button id="identity-refresh-btn" class="btn btn-secondary btn-sm" type="button">Refresh Detail</button>
+                  <button id="identity-load-more-btn" class="btn btn-secondary btn-sm" type="button">Load More</button>
+                </div>
+              </div>
+              <div class="identity-label-row">
+                <label class="form-label" for="identity-label-input">Character Name</label>
+                <div class="identity-label-actions">
+                  <input class="input" id="identity-label-input" type="text" placeholder="e.g. character_alice" />
+                  <button id="identity-label-save-btn" class="btn btn-primary btn-sm" type="button">Save Name</button>
+                  <button id="identity-label-clear-btn" class="btn btn-secondary btn-sm" type="button">Clear</button>
+                </div>
+              </div>
+              <p class="muted" id="identity-detail-meta">Select a character row to preview images.</p>
+              <div id="identity-images-grid" class="identity-images-grid"></div>
+              <p class="muted status-note" id="identity-detail-feedback">Select a character group to begin.</p>
+            </aside>
+          </div>
+        </section>
+      </section>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

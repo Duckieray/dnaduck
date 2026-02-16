@@ -1,0 +1,62 @@
+# DNADuck Configuration
+
+input_folder: ./generated
+output_folder: ./dnaduck_output
+database_path: ./dnaduck.sqlite3
+
+mode: realism # realism | anime | hybrid
+
+# Clustering parameters
+eps_realism: 0.31
+eps_anime: 0.47
+# Optional override for hybrid mode; if omitted, average(realism, anime) is used.
+# eps_hybrid: 0.68
+min_samples: 4
+
+# Existing-identity auto-assignment thresholds for incremental scans.
+assign_eps_realism: 0.27
+assign_eps_anime: 0.39
+# Optional override for hybrid mode; if omitted, average(assign realism, assign anime) is used.
+# assign_eps_hybrid: 0.625
+
+# Embedding options
+model_name: buffalo_l
+use_gpu: true
+det_size: [640, 640]
+# Skip files whose filename contains any of these (case-insensitive).
+exclude_name_contains: ["_upscaled", ".thumb"]
+
+# Output behavior
+overwrite_output: true
+identity_view_link_mode: none # none | symlink | hardlink | copy
+
+# LoRA export behavior
+lora_link_mode: hardlink # hardlink avoids image duplication when possible
+lora_min_images: 5
+# Captioning for export is currently identity-token only.
+# Rich/descriptive captioning: Coming Soon.
+
+# LoRA trainer
+lora_trainer: kohya_ss # kohya_ss | custom_command
+
+# kohya_ss (sd-scripts) integration
+# Set this to your local kohya sd-scripts repo path.
+kohya_sd_scripts_dir: ./trainer/sd-scripts
+# Set to your SDXL base model path/name.
+kohya_base_model: ./models/base/your_sdxl_model.safetensors
+kohya_output_dir: ./dnaduck_output/trained_loras
+kohya_output_name: dnaduck_lora
+kohya_train_steps: 1000
+kohya_learning_rate: 0.0001
+kohya_network_dim: 32
+kohya_network_alpha: 16
+kohya_batch_size: 1
+kohya_resolution: "1024,1024"
+kohya_num_repeats: 10
+
+# Optional custom command (overrides lora_trainer when set).
+# Available placeholders: {dataset_dir}
+lora_train_command: ""
+
+# Logging
+log_level: INFO
