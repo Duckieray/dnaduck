@@ -77,6 +77,12 @@ pip install -r requirements.txt
 
 If you run CPU-only, replace `onnxruntime-gpu` with `onnxruntime`.
 
+Optional LoRA trainer speedups:
+
+```bash
+pip install -r requirements-train-speed.txt
+```
+
 ## Optional WebbDuck Plugin Install
 
 DNADuck is not bundled with WebbDuck. Install it as an optional plugin from this repo:
@@ -120,7 +126,14 @@ Important fields:
 - `lora_trainer`: default `kohya_ss`.
 - `kohya_sd_scripts_dir`: set to `./trainer/sd-scripts` (recommended).
 - `kohya_base_model`: required for built-in trainer launch.
+- `kohya_optimizer_type`: `auto` by default (prefers `AdamW8bit` if `bitsandbytes` exists, else `AdamW`).
+- `kohya_attention_backend`: `auto` by default (prefers `xformers` if installed, else `sdpa`).
+- `kohya_max_data_loader_n_workers` / `kohya_persistent_data_loader_workers`: dataloader speed tuning.
+- `kohya_save_state_every_n_steps`: defaults to `250` to reduce save overhead while keeping resume support.
 - `lora_train_command`: optional command template with `{dataset_dir}` placeholder (overrides built-in trainer).
+
+For kohya training in the same Python environment as DNADuck, ensure `toml` and `accelerate` are installed.
+For faster training on supported systems, also install `bitsandbytes` and `xformers`.
 
 ### Trainer Folder Setup (Recommended)
 
@@ -173,6 +186,9 @@ Example endpoints:
 - `POST /search`
 - `POST /export/lora`
 - `POST /train/lora`
+- `GET /jobs/train/active`
+- `GET /jobs/{job_id}`
+- `POST /jobs/train/pause`
 
 ## Notes
 
@@ -184,5 +200,13 @@ Example endpoints:
 - Metadata/identity counts are DB-backed and can include prior tracked images until moderated or reset.
 - No external APIs are used.
 - Default trainer hook targets `kohya_ss/sd-scripts` via `tools/train_kohya_lora.py`.
+- Default trainer optimizer is `auto` (`AdamW8bit` with `bitsandbytes`, otherwise `AdamW`).
+- Default attention backend is `auto` (`xformers` when installed, otherwise `sdpa`).
+- If you force `kohya_optimizer_type: AdamW8bit`, `bitsandbytes` is required.
+- If you force `kohya_attention_backend: xformers`, `xformers` is required.
+- `POST /train/lora` now starts a background job by default and returns a `job_id`.
+- Use `POST /train/lora` with `{"wait_for_result": true}` for synchronous/blocking behavior.
+- Training progress now reports live step counters and ETA in `/activity` when available.
+- Pause/resume: call `POST /jobs/train/pause`, then start training again to auto-resume from latest saved state.
 
 See `TESTING.md` for exact validation steps.

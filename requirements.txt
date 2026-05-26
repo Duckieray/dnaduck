@@ -8,3 +8,4 @@ fastapi
 uvicorn
 pydantic
 accelerate
+toml

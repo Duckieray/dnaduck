@@ -157,6 +157,7 @@ def main() -> None:
         print(f"identities_exported: {result['identities_exported']}")
         print(f"images_exported: {result['images_exported']}")
         print(f"caption_mode: {result['caption_mode']}")
+        print(f"image_preprocess: {result.get('image_preprocess', 'none')}")
         print(f"rich_captioning: {result['rich_captioning_status']}")
         print(f"requested_identity_ids: {result['requested_identity_ids']}")
         print(f"exported_identity_ids: {result['exported_identity_ids']}")
@@ -186,6 +187,7 @@ def main() -> None:
             print("DNADuck LoRA export complete")
             print(f"identities_exported: {export_result['identities_exported']}")
             print(f"images_exported: {export_result['images_exported']}")
+            print(f"image_preprocess: {export_result.get('image_preprocess', 'none')}")
             print(f"requested_identity_ids: {export_result['requested_identity_ids']}")
             print(f"exported_identity_ids: {export_result['exported_identity_ids']}")
         try:
@@ -200,6 +202,18 @@ def main() -> None:
             print("prepared_dataset: true")
         print(f"returncode: {result['returncode']}")
         print(f"dataset_dir: {result['dataset_dir']}")
+        if result.get("output_dir") is not None:
+            print(f"output_dir: {result['output_dir']}")
+        if result.get("output_name_prefix") is not None:
+            print(f"output_name_prefix: {result['output_name_prefix']}")
+        if result.get("artifacts_before") is not None:
+            print(f"artifacts_before: {result['artifacts_before']}")
+        if result.get("artifacts_after") is not None:
+            print(f"artifacts_after: {result['artifacts_after']}")
+        if result.get("new_artifacts") is not None:
+            print(f"new_artifacts: {json.dumps(result['new_artifacts'], ensure_ascii=True)}")
+        if result.get("log_file") is not None:
+            print(f"log_file: {result['log_file']}")
         print(f"command: {' '.join(result['command'])}")
         if result["stdout"]:
             print("stdout:")

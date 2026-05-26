@@ -33,6 +33,14 @@ identity_view_link_mode: none # none | symlink | hardlink | copy
 # LoRA export behavior
 lora_link_mode: hardlink # hardlink avoids image duplication when possible
 lora_min_images: 5
+# Optional face-focused preprocessing for exported training images.
+# When enabled, DNADuck writes face-centered square JPG crops into lora_export.
+lora_face_crop_enabled: false
+lora_face_crop_size: 1024
+lora_face_crop_padding: 0.35
+lora_face_crop_model_name: buffalo_l
+# Keep false unless you specifically want GPU face-detection during export.
+lora_face_crop_use_gpu: false
 # Captioning for export is currently identity-token only.
 # Rich/descriptive captioning: Coming Soon.
 
@@ -43,7 +51,7 @@ lora_trainer: kohya_ss # kohya_ss | custom_command
 # Set this to your local kohya sd-scripts repo path.
 kohya_sd_scripts_dir: ./trainer/sd-scripts
 # Set to your SDXL base model path/name.
-kohya_base_model: ./models/base/your_sdxl_model.safetensors
+kohya_base_model: ""  # Required: set to your local SDXL base model path, e.g. /path/to/your_model.safetensors
 kohya_output_dir: ./dnaduck_output/trained_loras
 kohya_output_name: dnaduck_lora
 kohya_train_steps: 1000
@@ -52,7 +60,32 @@ kohya_network_dim: 32
 kohya_network_alpha: 16
 kohya_batch_size: 1
 kohya_resolution: "1024,1024"
+# Bucket settings (keeps non-square images like 832x1216 in nearby buckets).
+kohya_enable_bucket: true
+kohya_bucket_no_upscale: false
+kohya_min_bucket_reso: 256
+kohya_max_bucket_reso: 1536
 kohya_num_repeats: 10
+# Optimizer:
+# - auto: prefer AdamW8bit when bitsandbytes is installed, else AdamW
+# - AdamW8bit: require bitsandbytes
+# - AdamW: no bitsandbytes dependency
+kohya_optimizer_type: AdamW
+# Attention backend:
+# - auto: prefer xformers when installed, else torch SDPA
+# - xformers: require xformers package
+# - sdpa: force torch scaled-dot-product attention
+# - none: no explicit attention backend flag
+kohya_attention_backend: sdpa
+# Data loading speed knobs (quality-neutral).
+kohya_max_data_loader_n_workers: 2
+kohya_persistent_data_loader_workers: true
+# Save/Resume support
+kohya_save_state: true
+kohya_save_state_every_n_steps: 250
+kohya_auto_resume: true
+# Optional: explicit state dir override (usually leave empty with auto_resume enabled).
+kohya_resume_state: ""
 
 # Optional custom command (overrides lora_trainer when set).
 # Available placeholders: {dataset_dir}

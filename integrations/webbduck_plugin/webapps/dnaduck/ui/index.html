@@ -1,11 +1,16 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>DNADuck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./styles.css" />
 </head>
+
 <body>
   <div id="app" class="nova-app">
     <header class="nova-topbar">
@@ -56,7 +61,8 @@
 
                   <div class="actions">
                     <button id="scan-btn" class="btn btn-primary" type="button">Find Similar Faces</button>
-                    <button id="scan-recluster-btn" class="btn btn-secondary" type="button">Start Fresh (Rebuild)</button>
+                    <button id="scan-recluster-btn" class="btn btn-secondary" type="button">Start Fresh
+                      (Rebuild)</button>
                   </div>
                 </div>
               </section>
@@ -79,6 +85,21 @@
                   <div class="actions">
                     <button id="export-btn" class="btn btn-primary" type="button">Prepare Training Set</button>
                     <button id="train-btn" class="btn btn-secondary" type="button">Start Training</button>
+                    <button id="pause-train-btn" class="btn btn-secondary" type="button">Pause Training</button>
+                  </div>
+                  <div class="resume-training-panel">
+                    <label class="form-label" for="paused-job-select">Resume a Paused Training Run</label>
+                    <div class="resume-row">
+                      <select id="paused-job-select" class="select">
+                        <option value="">Loading paused runs...</option>
+                      </select>
+                      <button id="paused-refresh-btn" class="btn btn-secondary btn-sm" type="button">Refresh</button>
+                      <button id="resume-train-btn" class="btn btn-secondary btn-sm" type="button">Resume
+                        Selected</button>
+                    </div>
+                    <p class="muted status-note" id="paused-job-summary">
+                      Paused runs remember their character selection and training settings.
+                    </p>
                   </div>
                 </div>
               </section>
@@ -154,6 +175,7 @@
               <div class="nova-block-title">Training Status</div>
               <div class="nova-block-body">
                 <p class="muted status-note" id="training-status">Waiting for export or training action.</p>
+                <p class="muted status-note" id="training-detail"></p>
               </div>
             </section>
           </section>
@@ -178,25 +200,15 @@
 
           <div class="identity-layout">
             <div class="table-wrap">
-              <table id="identity-table">
-                <thead>
-                  <tr>
-                    <th>Select</th>
-                    <th>Group</th>
-                    <th>Photos</th>
-                    <th>Name</th>
-                    <th>Updated</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
+              <div id="identity-table" class="identity-card-list"></div>
             </div>
 
             <aside class="identity-detail">
               <div class="identity-detail-head">
                 <h3>Character Detail</h3>
                 <div class="identity-detail-controls">
-                  <button id="identity-refresh-btn" class="btn btn-secondary btn-sm" type="button">Refresh Detail</button>
+                  <button id="identity-refresh-btn" class="btn btn-secondary btn-sm" type="button">Refresh
+                    Detail</button>
                   <button id="identity-load-more-btn" class="btn btn-secondary btn-sm" type="button">Load More</button>
                 </div>
               </div>
@@ -220,4 +232,5 @@
 
   <script src="./app.js"></script>
 </body>
+
 </html>

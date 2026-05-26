@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -14,13 +16,16 @@ from core.service import (
     export_lora,
     get_identities,
     get_identity_detail,
+    is_active_training_running,
     merge_identity_groups,
     relabel_identity,
+    request_active_training_stop,
     scan_images,
     scan_recluster_from_scratch,
     search_by_image,
     trigger_lora_training,
 )
+from core.utils import load_config
 
 
 class ScanRequest(BaseModel):
@@ -53,6 +58,12 @@ class LoraTrainRequest(BaseModel):
     min_images: int | None = Field(default=None, ge=1)
     identity_ids: list[int] | None = None
     prepare_dataset: bool = False
+    wait_for_result: bool = False
+
+
+class ResumeTrainRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
+    prepare_dataset: bool = False
 
 
 class ImageActionRequest(BaseModel):
@@ -64,6 +75,7 @@ _ACTIVITY_LOCK = threading.Lock()
 _ACTIVITY: dict = {
     "running": False,
     "operation": None,
+    "job_id": None,
     "stage": None,
     "message": "Idle",
     "started_at": None,
@@ -80,9 +92,16 @@ _ACTIVITY: dict = {
     "noise_count": None,
     "no_face_count": None,
     "identity_count": None,
+    "eta_s": None,
+    "progress_pct": None,
     "last_result": None,
     "last_error": None,
 }
+_TRAIN_JOB_LOCK = threading.Lock()
+_TRAIN_JOBS: dict[str, dict] = {}
+_ACTIVE_TRAIN_JOB_ID: str | None = None
+_MAX_TRAIN_JOBS = 100
+_TRAIN_JOBS_STATE_PATH: Path | None = None
 
 
 def _normalize_optional_path(value: str | None) -> str | None:
@@ -94,7 +113,327 @@ def _normalize_optional_path(value: str | None) -> str | None:
     return raw or None
 
 
-def _activity_start(operation: str, message: str) -> None:
+def _new_train_job(payload: dict, *, resumed_from_job_id: str | None = None) -> dict:
+    now = time.time()
+    return {
+        "job_id": uuid.uuid4().hex,
+        "operation": "train_lora",
+        "status": "queued",
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "finished_at": None,
+        "request": payload,
+        "result": None,
+        "error": None,
+        "cancel_requested": False,
+        "resumed_from_job_id": resumed_from_job_id,
+    }
+
+
+def _state_path_for_config(cfg_path: Path) -> Path:
+    cfg = cfg_path.resolve()
+    return cfg.parent / ".dnaduck_train_jobs.json"
+
+
+def _persist_train_jobs_locked() -> None:
+    state_path = _TRAIN_JOBS_STATE_PATH
+    if state_path is None:
+        return
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "version": 1,
+            "saved_at": time.time(),
+            "jobs": list(_TRAIN_JOBS.values()),
+        }
+        tmp = state_path.with_name(f"{state_path.name}.tmp")
+        tmp.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+        tmp.replace(state_path)
+    except Exception:
+        # Persistence is best-effort; API runtime should continue even on disk errors.
+        pass
+
+
+def _normalize_loaded_train_job(raw: object) -> tuple[dict | None, bool]:
+    if not isinstance(raw, dict):
+        return None, False
+    job_id = str(raw.get("job_id") or "").strip()
+    if not job_id:
+        return None, False
+    now = time.time()
+
+    def _safe_float(value: object, default: float) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    status = str(raw.get("status") or "failed").strip().lower()
+    request = raw.get("request") if isinstance(raw.get("request"), dict) else {}
+    result = raw.get("result") if isinstance(raw.get("result"), dict) else None
+    error = None if raw.get("error") is None else str(raw.get("error"))
+    created_at = _safe_float(raw.get("created_at"), now)
+    updated_at = _safe_float(raw.get("updated_at"), created_at)
+    started_at = raw.get("started_at")
+    started_at = _safe_float(started_at, created_at) if isinstance(started_at, (int, float, str)) else None
+    finished_at = raw.get("finished_at")
+    finished_at = _safe_float(finished_at, updated_at) if isinstance(finished_at, (int, float, str)) else None
+    resumed_from_job_id = str(raw.get("resumed_from_job_id") or "").strip() or None
+    changed = False
+
+    if status in {"queued", "running", "pausing"}:
+        # After process restart, in-flight jobs can no longer be active.
+        status = "paused"
+        if not error:
+            error = "Recovered after API restart."
+        if finished_at is None:
+            finished_at = now
+        changed = True
+
+    if status not in {"queued", "running", "pausing", "paused", "completed", "failed"}:
+        status = "failed"
+        changed = True
+    if finished_at is None and status in {"paused", "completed", "failed"}:
+        finished_at = max(updated_at, now)
+        changed = True
+
+    job = {
+        "job_id": job_id,
+        "operation": "train_lora",
+        "status": status,
+        "created_at": created_at,
+        "updated_at": max(updated_at, created_at),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "request": request,
+        "result": result,
+        "error": error,
+        "cancel_requested": False,
+        "resumed_from_job_id": resumed_from_job_id,
+    }
+    return job, changed
+
+
+def _load_train_jobs_state(cfg_path: Path) -> None:
+    global _TRAIN_JOBS_STATE_PATH, _ACTIVE_TRAIN_JOB_ID
+    state_path = _state_path_for_config(cfg_path)
+    loaded: dict[str, dict] = {}
+    changed = False
+
+    source_count = 0
+    if state_path.exists():
+        try:
+            raw_payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except Exception:
+            raw_payload = {}
+        rows = raw_payload.get("jobs") if isinstance(raw_payload, dict) else []
+        if isinstance(rows, list):
+            source_count = len(rows)
+            for row in rows:
+                job, row_changed = _normalize_loaded_train_job(row)
+                if not job:
+                    changed = True
+                    continue
+                loaded[str(job["job_id"])] = job
+                changed = changed or row_changed
+
+    with _TRAIN_JOB_LOCK:
+        _TRAIN_JOBS_STATE_PATH = state_path
+        _TRAIN_JOBS.clear()
+        _TRAIN_JOBS.update(loaded)
+        _ACTIVE_TRAIN_JOB_ID = None
+        _trim_train_jobs()
+        if len(_TRAIN_JOBS) != source_count:
+            changed = True
+        if changed:
+            _persist_train_jobs_locked()
+
+
+def _trim_train_jobs() -> None:
+    if len(_TRAIN_JOBS) <= _MAX_TRAIN_JOBS:
+        return
+    completed = [
+        (job.get("finished_at") or 0.0, job_id)
+        for job_id, job in _TRAIN_JOBS.items()
+        if str(job.get("status", "")).lower() in {"completed", "failed", "paused"}
+    ]
+    completed.sort(key=lambda row: row[0])
+    for _, job_id in completed:
+        if len(_TRAIN_JOBS) <= _MAX_TRAIN_JOBS:
+            break
+        _TRAIN_JOBS.pop(job_id, None)
+
+
+def _create_train_job(payload: dict, *, resumed_from_job_id: str | None = None) -> dict:
+    global _ACTIVE_TRAIN_JOB_ID
+    with _TRAIN_JOB_LOCK:
+        if _ACTIVE_TRAIN_JOB_ID:
+            active = _TRAIN_JOBS.get(_ACTIVE_TRAIN_JOB_ID)
+            if active and str(active.get("status", "")).lower() in {"queued", "running", "pausing"}:
+                raise RuntimeError(f"A training job is already active: {_ACTIVE_TRAIN_JOB_ID}")
+            _ACTIVE_TRAIN_JOB_ID = None
+        job = _new_train_job(payload, resumed_from_job_id=resumed_from_job_id)
+        _TRAIN_JOBS[job["job_id"]] = job
+        _ACTIVE_TRAIN_JOB_ID = job["job_id"]
+        _trim_train_jobs()
+        _persist_train_jobs_locked()
+        return dict(job)
+
+
+def _normalize_status_filter(status: str | None) -> set[str] | None:
+    raw = str(status or "").strip().lower()
+    if not raw:
+        return None
+    values = {item.strip() for item in raw.split(",") if item.strip()}
+    return values or None
+
+
+def _safe_int_list(value: object) -> list[int]:
+    if not isinstance(value, list):
+        return []
+    items: list[int] = []
+    for raw in value:
+        try:
+            parsed = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            items.append(parsed)
+    return items
+
+
+def _summarize_train_job(job: dict) -> dict:
+    request = job.get("request") if isinstance(job.get("request"), dict) else {}
+    result = job.get("result") if isinstance(job.get("result"), dict) else {}
+    identity_ids = _safe_int_list(request.get("identity_ids"))
+    new_artifacts = result.get("new_artifacts") if isinstance(result.get("new_artifacts"), list) else []
+    return {
+        "job_id": job.get("job_id"),
+        "status": job.get("status"),
+        "operation": job.get("operation"),
+        "created_at": job.get("created_at"),
+        "updated_at": job.get("updated_at"),
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "cancel_requested": bool(job.get("cancel_requested")),
+        "resumed_from_job_id": job.get("resumed_from_job_id"),
+        "request_summary": {
+            "output_folder": request.get("output_folder"),
+            "min_images": request.get("min_images"),
+            "identity_ids": identity_ids,
+            "identity_count": len(identity_ids),
+            "prepare_dataset": bool(request.get("prepare_dataset")),
+        },
+        "result_summary": {
+            "returncode": result.get("returncode"),
+            "stopped_by_user": bool(result.get("stopped_by_user")),
+            "dataset_dir": result.get("dataset_dir"),
+            "output_dir": result.get("output_dir"),
+            "log_file": result.get("log_file"),
+            "new_artifacts_count": len(new_artifacts),
+        },
+        "error": job.get("error"),
+    }
+
+
+def _list_train_jobs(*, statuses: set[str] | None = None, limit: int = 25) -> list[dict]:
+    with _TRAIN_JOB_LOCK:
+        jobs = [dict(row) for row in _TRAIN_JOBS.values()]
+    if statuses:
+        jobs = [row for row in jobs if str(row.get("status", "")).lower() in statuses]
+    jobs.sort(key=lambda row: float(row.get("created_at") or 0.0), reverse=True)
+    return [_summarize_train_job(row) for row in jobs[: max(1, int(limit))]]
+
+
+def _get_train_job(job_id: str) -> dict | None:
+    with _TRAIN_JOB_LOCK:
+        job = _TRAIN_JOBS.get(job_id)
+        return None if job is None else dict(job)
+
+
+def _get_active_train_job() -> dict | None:
+    with _TRAIN_JOB_LOCK:
+        if not _ACTIVE_TRAIN_JOB_ID:
+            return None
+        job = _TRAIN_JOBS.get(_ACTIVE_TRAIN_JOB_ID)
+        return None if job is None else dict(job)
+
+
+def _update_train_job(
+    job_id: str,
+    *,
+    status: str | None = None,
+    result: dict | None = None,
+    error: str | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> None:
+    global _ACTIVE_TRAIN_JOB_ID
+    now = time.time()
+    with _TRAIN_JOB_LOCK:
+        job = _TRAIN_JOBS.get(job_id)
+        if not job:
+            return
+        if status is not None:
+            job["status"] = status
+        if result is not None:
+            job["result"] = result
+        if error is not None:
+            job["error"] = error
+        if started and job.get("started_at") is None:
+            job["started_at"] = now
+        if finished:
+            job["finished_at"] = now
+            if _ACTIVE_TRAIN_JOB_ID == job_id:
+                _ACTIVE_TRAIN_JOB_ID = None
+        job["updated_at"] = now
+        _persist_train_jobs_locked()
+
+
+def _request_cancel_train_job(job_id: str) -> bool:
+    now = time.time()
+    with _TRAIN_JOB_LOCK:
+        job = _TRAIN_JOBS.get(job_id)
+        if not job:
+            return False
+        status = str(job.get("status", "")).lower()
+        if status not in {"queued", "running", "pausing"}:
+            return False
+        job["cancel_requested"] = True
+        if status != "pausing":
+            job["status"] = "pausing"
+        job["updated_at"] = now
+        _persist_train_jobs_locked()
+        return True
+
+
+def _find_cancellable_train_job_id() -> str | None:
+    with _TRAIN_JOB_LOCK:
+        if _ACTIVE_TRAIN_JOB_ID:
+            active = _TRAIN_JOBS.get(_ACTIVE_TRAIN_JOB_ID)
+            if active and str(active.get("status", "")).lower() in {"queued", "running", "pausing"}:
+                return str(active.get("job_id") or "").strip() or None
+
+        candidates: list[tuple[float, str]] = []
+        for job_id, job in _TRAIN_JOBS.items():
+            status = str(job.get("status", "")).lower()
+            if status in {"queued", "running", "pausing"}:
+                updated = float(job.get("updated_at") or job.get("created_at") or 0.0)
+                candidates.append((updated, str(job_id)))
+        if not candidates:
+            return None
+        candidates.sort(reverse=True)
+        return candidates[0][1]
+
+
+def _is_cancel_requested(job_id: str) -> bool:
+    with _TRAIN_JOB_LOCK:
+        job = _TRAIN_JOBS.get(job_id)
+        return bool(job and job.get("cancel_requested"))
+
+
+def _activity_start(operation: str, message: str, *, job_id: str | None = None) -> None:
     now = time.time()
     with _ACTIVITY_LOCK:
         for key in (
@@ -109,10 +448,13 @@ def _activity_start(operation: str, message: str) -> None:
             "no_face_count",
             "identity_count",
             "pending_count",
+            "eta_s",
+            "progress_pct",
         ):
             _ACTIVITY[key] = None
         _ACTIVITY["running"] = True
         _ACTIVITY["operation"] = operation
+        _ACTIVITY["job_id"] = job_id
         _ACTIVITY["stage"] = "starting"
         _ACTIVITY["message"] = message
         _ACTIVITY["started_at"] = now
@@ -138,6 +480,8 @@ def _activity_update(payload: dict) -> None:
             "no_face_count",
             "identity_count",
             "pending_count",
+            "eta_s",
+            "progress_pct",
         ):
             if key in payload:
                 _ACTIVITY[key] = payload.get(key)
@@ -166,7 +510,7 @@ def _activity_fail(error_text: str) -> None:
     with _ACTIVITY_LOCK:
         _ACTIVITY["running"] = False
         _ACTIVITY["stage"] = "failed"
-        _ACTIVITY["message"] = "Scan failed."
+        _ACTIVITY["message"] = "Operation failed."
         _ACTIVITY["updated_at"] = now
         _ACTIVITY["last_completed_at"] = now
         _ACTIVITY["last_error"] = str(error_text)[:4000]
@@ -185,9 +529,191 @@ def _activity_snapshot() -> dict:
     return payload
 
 
+def _extract_training_failure_reason(result: dict) -> str | None:
+    if not isinstance(result, dict):
+        return None
+    candidates: list[str] = []
+    for key in ("stderr", "stdout"):
+        raw = result.get(key)
+        if not isinstance(raw, str):
+            continue
+        lines = [line.strip() for line in raw.splitlines() if line.strip()]
+        for line in reversed(lines):
+            text = line[:300]
+            if any(
+                token in text
+                for token in (
+                    "RuntimeError:",
+                    "ModuleNotFoundError:",
+                    "FileNotFoundError:",
+                    "ValueError:",
+                    "KeyError:",
+                    "CalledProcessError:",
+                    "ImportError:",
+                )
+            ):
+                return text
+            if "returned non-zero exit status" in text:
+                candidates.append(text)
+    if candidates:
+        return candidates[0]
+    return None
+
+
+def _finalize_paused_if_idle(job_id: str | None) -> bool:
+    if not job_id:
+        return False
+    latest = _get_train_job(str(job_id).strip())
+    if not latest:
+        return False
+    status = str(latest.get("status", "")).lower()
+    cancel_requested = bool(latest.get("cancel_requested"))
+    if status not in {"queued", "running", "pausing"}:
+        return status == "paused"
+    if not (cancel_requested or status == "pausing"):
+        return False
+    if is_active_training_running():
+        return False
+
+    result = latest.get("result") if isinstance(latest.get("result"), dict) else {}
+    paused_result = dict(result) if isinstance(result, dict) else {}
+    paused_result["stopped_by_user"] = True
+    paused_result.setdefault("returncode", None)
+    _activity_finish(result=paused_result, message="Training paused. Resume to continue.")
+    _update_train_job(job_id, status="paused", result=paused_result, finished=True)
+    return True
+
+
+def _execute_train_request(cfg_path: Path, payload: dict, *, stop_callback=None) -> dict:
+    if callable(stop_callback):
+        try:
+            if bool(stop_callback()):
+                return {"stopped_by_user": True}
+        except Exception:
+            pass
+
+    export_result: dict | None = None
+    if (
+        bool(payload.get("prepare_dataset"))
+        or payload.get("min_images") is not None
+        or payload.get("identity_ids")
+    ):
+        _activity_update({"stage": "exporting", "message": "Preparing training set..."})
+        export_overrides = {"output_folder": _normalize_optional_path(payload.get("output_folder"))}
+        if payload.get("min_images") is not None:
+            export_overrides["lora_min_images"] = int(payload["min_images"])
+        if payload.get("identity_ids"):
+            export_overrides["lora_identity_ids"] = [int(v) for v in payload["identity_ids"] if int(v) > 0]
+        export_result = export_lora(config_path=cfg_path, overrides=export_overrides)
+
+    if callable(stop_callback):
+        try:
+            if bool(stop_callback()):
+                result = {"stopped_by_user": True}
+                if export_result is not None:
+                    result["prepared_dataset"] = True
+                    result["export_result"] = export_result
+                else:
+                    result["prepared_dataset"] = False
+                return result
+        except Exception:
+            pass
+
+    activity_payload: dict[str, object] = {"stage": "training", "message": "Training in progress..."}
+    try:
+        cfg = load_config(cfg_path.resolve())
+        expected_steps = int(cfg.get("kohya_train_steps", 0))
+        if expected_steps > 0:
+            activity_payload["processed_count"] = 0
+            activity_payload["total_count"] = expected_steps
+            activity_payload["progress_pct"] = 0.0
+            activity_payload["message"] = f"Training in progress... Step 0/{expected_steps}"
+    except Exception:
+        pass
+    _activity_update(activity_payload)
+    result = trigger_lora_training(
+        config_path=cfg_path,
+        overrides={"output_folder": _normalize_optional_path(payload.get("output_folder"))},
+        progress_callback=_activity_update,
+        stop_callback=stop_callback,
+    )
+    if export_result is not None:
+        result["prepared_dataset"] = True
+        result["export_result"] = export_result
+    else:
+        result["prepared_dataset"] = False
+    return result
+
+
+def _run_train_job(job_id: str, cfg_path: Path, payload: dict) -> None:
+    _update_train_job(job_id, status="running", started=True)
+    _activity_start(
+        operation="train_lora",
+        message="Preparing and starting training...",
+        job_id=job_id,
+    )
+    if _is_cancel_requested(job_id):
+        result = {"stopped_by_user": True, "returncode": None}
+        _activity_finish(result=result, message="Training paused. Resume to continue.")
+        _update_train_job(job_id, status="paused", result=result, finished=True)
+        return
+    try:
+        result = _execute_train_request(
+            cfg_path=cfg_path,
+            payload=payload,
+            stop_callback=lambda: _is_cancel_requested(job_id),
+        )
+        latest = _get_train_job(job_id)
+        latest_status = str((latest or {}).get("status", "")).lower()
+        if latest_status == "paused":
+            # Pause endpoint may have already finalized this job after process stop.
+            return
+
+        cancel_requested = _is_cancel_requested(job_id)
+        if bool(result.get("stopped_by_user")) or cancel_requested:
+            paused_result = dict(result) if isinstance(result, dict) else {}
+            paused_result["stopped_by_user"] = True
+            paused_result.setdefault("returncode", result.get("returncode") if isinstance(result, dict) else None)
+            _activity_finish(result=result, message="Training paused. Resume to continue.")
+            _update_train_job(job_id, status="paused", result=paused_result, finished=True)
+            return
+        returncode = result.get("returncode")
+        returncode_int = (
+            int(returncode)
+            if isinstance(returncode, (int, float, str)) and str(returncode).strip()
+            else None
+        )
+        if returncode_int == 0:
+            _activity_finish(result=result, message="Training finished successfully.")
+            _update_train_job(job_id, status="completed", result=result, finished=True)
+        else:
+            reason = _extract_training_failure_reason(result)
+            message = (
+                f"Training finished with code {returncode_int}."
+                if returncode_int is not None
+                else "Training command finished."
+            )
+            if reason:
+                message = f"{message} {reason}"
+            _activity_finish(result=result, message=message)
+            _update_train_job(job_id, status="failed", result=result, finished=True)
+    except Exception as exc:
+        latest = _get_train_job(job_id)
+        if str((latest or {}).get("status", "")).lower() == "paused":
+            return
+        if _is_cancel_requested(job_id):
+            paused_result = {"stopped_by_user": True, "returncode": None}
+            _activity_finish(result=paused_result, message="Training paused. Resume to continue.")
+            _update_train_job(job_id, status="paused", result=paused_result, finished=True)
+            return
+        _activity_fail(str(exc))
+        _update_train_job(job_id, status="failed", error=str(exc), finished=True)
+
+
 def create_app(config_path: str | None = None) -> FastAPI:
     app = FastAPI(title="DNADuck API", version="0.1.0")
     cfg_path = Path(config_path or os.environ.get("DNADUCK_CONFIG", "config.yaml")).resolve()
+    _load_train_jobs_state(cfg_path)
 
     @app.get("/health")
     def health() -> dict:
@@ -195,7 +721,103 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/activity")
     def activity() -> dict:
+        active = _get_active_train_job()
+        if active:
+            _finalize_paused_if_idle(str(active.get("job_id") or "").strip())
         return _activity_snapshot()
+
+    @app.get("/jobs/train/active")
+    def active_train_job() -> dict:
+        job = _get_active_train_job()
+        return {"job": job}
+
+    @app.get("/jobs/train")
+    def list_train_jobs(
+        status: str | None = Query(default=None),
+        limit: int = Query(default=25, ge=1, le=200),
+    ) -> dict:
+        statuses = _normalize_status_filter(status)
+        return {"jobs": _list_train_jobs(statuses=statuses, limit=limit)}
+
+    @app.get("/jobs/{job_id}")
+    def get_job(job_id: str) -> dict:
+        job = _get_train_job(str(job_id).strip())
+        if not job:
+            raise HTTPException(status_code=404, detail=f"Job not found: {job_id}")
+        return job
+
+    @app.post("/jobs/train/resume")
+    def resume_train_job(payload: ResumeTrainRequest) -> dict:
+        source_job_id = str(payload.job_id).strip()
+        source = _get_train_job(source_job_id)
+        if not source:
+            raise HTTPException(status_code=404, detail=f"Job not found: {source_job_id}")
+        source_status = str(source.get("status", "")).lower()
+        if source_status != "paused":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Only paused jobs can be resumed. Current status: {source_status or 'unknown'}",
+            )
+
+        request = source.get("request") if isinstance(source.get("request"), dict) else {}
+        resume_payload = {
+            "output_folder": _normalize_optional_path(request.get("output_folder")),
+            "min_images": None if request.get("min_images") is None else int(request["min_images"]),
+            "identity_ids": _safe_int_list(request.get("identity_ids")) or None,
+            "prepare_dataset": bool(payload.prepare_dataset),
+            "wait_for_result": False,
+        }
+        try:
+            job = _create_train_job(resume_payload, resumed_from_job_id=source_job_id)
+            job_id = str(job["job_id"])
+            thread = threading.Thread(
+                target=_run_train_job,
+                kwargs={"job_id": job_id, "cfg_path": cfg_path, "payload": resume_payload},
+                daemon=True,
+                name=f"dnaduck-train-{job_id[:8]}",
+            )
+            thread.start()
+            return {
+                "accepted": True,
+                "job_id": job_id,
+                "status": "queued",
+                "resumed_from_job_id": source_job_id,
+                "message": "Training resume started in background.",
+            }
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/jobs/train/pause")
+    def pause_active_train_job() -> dict:
+        job_id = _find_cancellable_train_job_id()
+        requested = False
+        latest = None
+        if job_id:
+            requested = _request_cancel_train_job(job_id)
+            latest = _get_train_job(job_id)
+
+        stopped_process = request_active_training_stop()
+        if requested or stopped_process:
+            _activity_update({"stage": "pausing", "message": "Pause requested. Stopping after current step..."})
+            finalized = _finalize_paused_if_idle(job_id)
+            status = "paused" if finalized else (None if latest is None else latest.get("status"))
+            if status is None and stopped_process and not finalized:
+                status = "pausing"
+            return {
+                "ok": True,
+                "job_id": job_id,
+                "status": status,
+                "message": "Pause requested.",
+            }
+
+        if not job_id:
+            return {"ok": False, "message": "No active training job.", "job_id": None}
+        return {
+            "ok": False,
+            "job_id": job_id,
+            "status": None if latest is None else latest.get("status"),
+            "message": "Training job is not running.",
+        }
 
     @app.post("/scan")
     def scan(payload: ScanRequest) -> dict:
@@ -312,47 +934,79 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/export/lora")
     def export_lora_endpoint(payload: LoraExportRequest) -> dict:
+        _activity_start(operation="export_lora", message="Preparing training set...")
         overrides = {"output_folder": _normalize_optional_path(payload.output_folder)}
         if payload.min_images is not None:
             overrides["lora_min_images"] = int(payload.min_images)
         if payload.identity_ids:
             overrides["lora_identity_ids"] = [int(v) for v in payload.identity_ids if int(v) > 0]
         try:
-            return export_lora(config_path=cfg_path, overrides=overrides)
+            result = export_lora(config_path=cfg_path, overrides=overrides)
+            _activity_finish(result=result, message="Training set prepared.")
+            return result
         except FileNotFoundError as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=500, detail=f"LoRA export failed: {exc}") from exc
 
     @app.post("/train/lora")
     def train_lora_endpoint(payload: LoraTrainRequest) -> dict:
+        request_payload = {
+            "output_folder": _normalize_optional_path(payload.output_folder),
+            "min_images": None if payload.min_images is None else int(payload.min_images),
+            "identity_ids": (
+                [int(v) for v in payload.identity_ids if int(v) > 0]
+                if payload.identity_ids
+                else None
+            ),
+            "prepare_dataset": bool(payload.prepare_dataset),
+            "wait_for_result": bool(payload.wait_for_result),
+        }
         try:
-            export_result: dict | None = None
-            if payload.prepare_dataset or payload.min_images is not None or payload.identity_ids:
-                export_overrides = {"output_folder": _normalize_optional_path(payload.output_folder)}
-                if payload.min_images is not None:
-                    export_overrides["lora_min_images"] = int(payload.min_images)
-                if payload.identity_ids:
-                    export_overrides["lora_identity_ids"] = [int(v) for v in payload.identity_ids if int(v) > 0]
-                export_result = export_lora(config_path=cfg_path, overrides=export_overrides)
+            job = _create_train_job(request_payload)
+            job_id = str(job["job_id"])
 
-            result = trigger_lora_training(
-                config_path=cfg_path,
-                overrides={"output_folder": _normalize_optional_path(payload.output_folder)},
+            if bool(payload.wait_for_result):
+                _run_train_job(job_id=job_id, cfg_path=cfg_path, payload=request_payload)
+                completed = _get_train_job(job_id)
+                if not completed:
+                    raise HTTPException(status_code=500, detail="Training job disappeared unexpectedly.")
+                result = completed.get("result")
+                if not isinstance(result, dict):
+                    detail = str(completed.get("error") or "Training job failed.")
+                    raise HTTPException(status_code=500, detail=detail)
+                result["job_id"] = job_id
+                result["job_status"] = str(completed.get("status") or "")
+                return result
+
+            thread = threading.Thread(
+                target=_run_train_job,
+                kwargs={"job_id": job_id, "cfg_path": cfg_path, "payload": request_payload},
+                daemon=True,
+                name=f"dnaduck-train-{job_id[:8]}",
             )
-            if export_result is not None:
-                result["prepared_dataset"] = True
-                result["export_result"] = export_result
-            else:
-                result["prepared_dataset"] = False
-            return result
+            thread.start()
+            return {
+                "accepted": True,
+                "job_id": job_id,
+                "status": "queued",
+                "message": "Training started in background.",
+            }
         except FileNotFoundError as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ValueError as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except Exception as exc:
+            _activity_fail(str(exc))
             raise HTTPException(status_code=500, detail=f"LoRA training failed: {exc}") from exc
 
     @app.post("/image/action")

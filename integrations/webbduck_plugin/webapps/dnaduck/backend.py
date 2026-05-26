@@ -23,6 +23,12 @@ PLUGIN_ROOT = Path(__file__).resolve().parent
 STATE_DIR = Path.home() / ".webbduck" / "plugin_state"
 STATE_FILE = STATE_DIR / "dnaduck_connection.json"
 VALID_CONNECTION_MODES = {"auto", "local_cli", "remote_api", "managed_api"}
+REMOTE_TIMEOUT_DEFAULT_S = 300
+REMOTE_TIMEOUT_HEALTH_S = 5
+REMOTE_TIMEOUT_ACTIVITY_S = 10
+REMOTE_TIMEOUT_SCAN_S = 60 * 60
+REMOTE_TIMEOUT_EXPORT_S = 60 * 60
+REMOTE_TIMEOUT_TRAIN_S = 24 * 60 * 60
 
 _MANAGED_PROCESS: subprocess.Popen | None = None
 _MANAGED_API_BASE: str | None = None
@@ -30,6 +36,7 @@ _ACTIVITY_LOCK = threading.Lock()
 _ACTIVITY: dict = {
     "running": False,
     "operation": None,
+    "stage": None,
     "message": "Idle",
     "target_mode": None,
     "api_base": None,
@@ -63,6 +70,11 @@ class TrainRequest(BaseModel):
     output_folder: str | None = None
     min_images: int | None = Field(default=None, ge=1)
     identity_ids: list[int] | None = None
+    prepare_dataset: bool = False
+
+
+class ResumeTrainingRequest(BaseModel):
+    job_id: str = Field(..., min_length=1)
     prepare_dataset: bool = False
 
 
@@ -122,7 +134,7 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
 
     @router.get("/health")
     def health() -> dict:
-        target = _resolve_backend_target(start_managed=True)
+        target = _resolve_backend_target(start_managed=False)
         config = _load_connection_config()
         if target.api_base:
             payload = _remote_request(target.api_base, "GET", "/health")
@@ -153,6 +165,101 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
     def activity() -> dict:
         return _activity_snapshot()
 
+    @router.get("/train-job-active")
+    def train_job_active() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            result = _remote_request(
+                target.api_base,
+                "GET",
+                "/jobs/train/active",
+                timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+            )
+            return result if isinstance(result, dict) else {"job": None}
+        return {"job": None}
+
+    @router.get("/train-job/{job_id}")
+    def train_job(job_id: str) -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            result = _remote_request(
+                target.api_base,
+                "GET",
+                f"/jobs/{urllib_parse.quote(str(job_id).strip())}",
+                timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+            )
+            return result if isinstance(result, dict) else {}
+        raise HTTPException(status_code=400, detail="Train job lookup requires API mode.")
+
+    @router.get("/train-jobs")
+    def train_jobs(
+        status: str | None = Query(default="paused"),
+        limit: int = Query(default=50, ge=1, le=200),
+    ) -> dict:
+        local_jobs = _load_local_train_jobs(status=status, limit=limit)
+        target = _resolve_backend_target(start_managed=False)
+        if not target.api_base:
+            return {"jobs": local_jobs}
+        query = f"status={urllib_parse.quote(str(status or '').strip())}&limit={int(limit)}"
+        try:
+            result = _remote_request(
+                target.api_base,
+                "GET",
+                f"/jobs/train?{query}",
+                timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+            )
+            remote_jobs = result.get("jobs", []) if isinstance(result, dict) else []
+        except Exception:
+            remote_jobs = []
+
+        merged: dict[str, dict] = {}
+        for row in remote_jobs:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("job_id") or "").strip()
+            if not key:
+                continue
+            merged[key] = row
+        for row in local_jobs:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("job_id") or "").strip()
+            if not key or key in merged:
+                continue
+            merged[key] = row
+        rows = list(merged.values())
+        rows.sort(key=lambda item: _safe_float(item.get("created_at"), 0.0), reverse=True)
+        return {"jobs": rows[: max(1, int(limit))]}
+
+    @router.post("/resume-training")
+    def resume_training(payload: ResumeTrainingRequest) -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if not target.api_base:
+            raise HTTPException(status_code=400, detail="Resume is available only in API mode.")
+        result = _remote_request(
+            target.api_base,
+            "POST",
+            "/jobs/train/resume",
+            {
+                "job_id": str(payload.job_id).strip(),
+                "prepare_dataset": bool(payload.prepare_dataset),
+            },
+            timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+        )
+        data = result if isinstance(result, dict) else {}
+        if bool(data.get("accepted")) and str(data.get("job_id", "")).strip():
+            now = time.time()
+            with _ACTIVITY_LOCK:
+                _ACTIVITY["running"] = True
+                _ACTIVITY["operation"] = "train_lora"
+                _ACTIVITY["message"] = "Resumed training started in background."
+                _ACTIVITY["stage"] = "queued"
+                _ACTIVITY["started_at"] = now
+                _ACTIVITY["updated_at"] = now
+                _ACTIVITY["last_error"] = None
+                _ACTIVITY["last_result_summary"] = _summarize_train_result(data)
+        return {"result": data}
+
     @router.post("/scan")
     def scan(payload: ScanRequest) -> dict:
         target = _resolve_backend_target(start_managed=True)
@@ -175,6 +282,7 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                         "input_folder": payload.input_folder,
                         "output_folder": payload.output_folder,
                     },
+                    timeout_s=REMOTE_TIMEOUT_SCAN_S,
                 )
                 summary = _summarize_scan_result(result)
                 _activity_finish(
@@ -221,6 +329,7 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                         "input_folder": payload.input_folder,
                         "output_folder": payload.output_folder,
                     },
+                    timeout_s=REMOTE_TIMEOUT_SCAN_S,
                 )
                 summary = _summarize_scan_result(result)
                 _activity_finish(
@@ -421,6 +530,7 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                         "min_images": payload.min_images,
                         "identity_ids": payload.identity_ids,
                     },
+                    timeout_s=REMOTE_TIMEOUT_EXPORT_S,
                 )
                 _activity_finish(
                     message="LoRA export complete.",
@@ -470,12 +580,28 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                         "min_images": payload.min_images,
                         "identity_ids": payload.identity_ids,
                         "prepare_dataset": bool(payload.prepare_dataset),
+                        "wait_for_result": False,
                     },
+                    timeout_s=REMOTE_TIMEOUT_TRAIN_S,
                 )
-                _activity_finish(
-                    message="LoRA training command finished.",
-                    result_summary=_summarize_train_result(result),
-                )
+                if bool(result.get("accepted")) and str(result.get("job_id", "")).strip():
+                    now = time.time()
+                    with _ACTIVITY_LOCK:
+                        _ACTIVITY["running"] = True
+                        _ACTIVITY["operation"] = "train_lora"
+                        _ACTIVITY["target_mode"] = target.mode
+                        _ACTIVITY["api_base"] = target.api_base
+                        _ACTIVITY["message"] = "Training started in background."
+                        _ACTIVITY["stage"] = "queued"
+                        _ACTIVITY["started_at"] = now
+                        _ACTIVITY["updated_at"] = now
+                        _ACTIVITY["last_error"] = None
+                        _ACTIVITY["last_result_summary"] = _summarize_train_result(result)
+                else:
+                    _activity_finish(
+                        message="LoRA training command finished.",
+                        result_summary=_summarize_train_result(result),
+                    )
                 return {"result": result, "raw": result}
 
             export_result = None
@@ -514,6 +640,34 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
             _activity_fail(str(exc))
             raise
 
+    @router.post("/pause-training")
+    def pause_training() -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if not target.api_base:
+            raise HTTPException(
+                status_code=400,
+                detail="Pause is available only in API mode (managed_api or remote_api).",
+            )
+        result = _remote_request(
+            target.api_base,
+            "POST",
+            "/jobs/train/pause",
+            timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+        )
+        data = result if isinstance(result, dict) else {}
+        ok = bool(data.get("ok"))
+        if ok:
+            now = time.time()
+            with _ACTIVITY_LOCK:
+                _ACTIVITY["running"] = True
+                _ACTIVITY["operation"] = "train_lora"
+                _ACTIVITY["target_mode"] = target.mode
+                _ACTIVITY["api_base"] = target.api_base
+                _ACTIVITY["stage"] = "pausing"
+                _ACTIVITY["message"] = str(data.get("message") or "Pause requested.")
+                _ACTIVITY["updated_at"] = now
+        return {"result": data}
+
     return router
 
 
@@ -522,6 +676,7 @@ def _activity_start(*, operation: str, target_mode: str, api_base: str | None, m
     with _ACTIVITY_LOCK:
         _ACTIVITY["running"] = True
         _ACTIVITY["operation"] = operation
+        _ACTIVITY["stage"] = "starting"
         _ACTIVITY["target_mode"] = target_mode
         _ACTIVITY["api_base"] = api_base
         _ACTIVITY["message"] = message
@@ -539,6 +694,7 @@ def _activity_finish(*, message: str, result_summary: dict | None = None) -> Non
         if isinstance(started_at, (int, float)):
             duration = max(0.0, now - float(started_at))
         _ACTIVITY["running"] = False
+        _ACTIVITY["stage"] = "complete"
         _ACTIVITY["message"] = message
         _ACTIVITY["updated_at"] = now
         _ACTIVITY["last_completed_at"] = now
@@ -551,6 +707,7 @@ def _activity_fail(error_text: str) -> None:
     now = time.time()
     with _ACTIVITY_LOCK:
         _ACTIVITY["running"] = False
+        _ACTIVITY["stage"] = "failed"
         _ACTIVITY["message"] = "Operation failed."
         _ACTIVITY["updated_at"] = now
         _ACTIVITY["last_completed_at"] = now
@@ -563,28 +720,81 @@ def _activity_snapshot() -> dict:
         payload = dict(_ACTIVITY)
 
     api_base = str(payload.get("api_base") or "").strip()
+    if not api_base:
+        try:
+            target = _resolve_backend_target(start_managed=False)
+            if target.api_base:
+                api_base = str(target.api_base).strip()
+                payload["api_base"] = api_base
+                payload["target_mode"] = target.mode
+        except Exception:
+            api_base = ""
+
     if api_base:
         try:
-            remote_activity = _remote_request(api_base, "GET", "/activity")
+            remote_activity = _remote_request(
+                api_base,
+                "GET",
+                "/activity",
+                timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+            )
             if isinstance(remote_activity, dict):
                 payload["remote_activity"] = remote_activity
-                if bool(remote_activity.get("running", False)):
-                    payload["running"] = True
-                if remote_activity.get("message"):
-                    payload["message"] = remote_activity.get("message")
-                if remote_activity.get("operation"):
-                    payload["operation"] = remote_activity.get("operation")
-                if remote_activity.get("stage"):
-                    payload["stage"] = remote_activity.get("stage")
-        except Exception:
-            pass
+                # Remote API is authoritative when present.
+                if "running" in remote_activity:
+                    payload["running"] = bool(remote_activity.get("running"))
+                for key in (
+                    "message",
+                    "operation",
+                    "stage",
+                    "started_at",
+                    "updated_at",
+                    "last_completed_at",
+                    "last_duration_s",
+                    "last_error",
+                    "elapsed_s",
+                ):
+                    if key in remote_activity and remote_activity.get(key) is not None:
+                        payload[key] = remote_activity.get(key)
+
+                # Clear stale local "queued/pausing" state when remote has no active train job.
+                if not bool(remote_activity.get("running")):
+                    try:
+                        active_job_payload = _remote_request(
+                            api_base,
+                            "GET",
+                            "/jobs/train/active",
+                            timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+                        )
+                        active_job = (
+                            active_job_payload.get("job")
+                            if isinstance(active_job_payload, dict)
+                            else None
+                        )
+                    except Exception:
+                        active_job = None
+                    stage_text = str(payload.get("stage") or "").strip().lower()
+                    if active_job is None and (
+                        stage_text in {"queued", "pausing", "training", "training_preparing", "training_starting"}
+                        or stage_text.startswith("training")
+                    ):
+                        payload["running"] = False
+                        payload["stage"] = "complete"
+                        payload["message"] = "No active training job."
+        except Exception as exc:
+            # If remote status cannot be read, do not keep stale "running" forever.
+            payload["running"] = False
+            payload["stage"] = "failed"
+            payload["message"] = "Remote activity unavailable."
+            payload["last_error"] = str(exc)[:4000]
 
     started_at = payload.get("started_at")
-    payload["elapsed_s"] = (
-        max(0.0, now - float(started_at))
-        if payload.get("running") and isinstance(started_at, (int, float))
-        else None
-    )
+    if payload.get("elapsed_s") is None:
+        payload["elapsed_s"] = (
+            max(0.0, now - float(started_at))
+            if payload.get("running") and isinstance(started_at, (int, float))
+            else None
+        )
     return payload
 
 
@@ -622,10 +832,109 @@ def _summarize_train_result(payload: dict | list | None) -> dict:
     data = payload if isinstance(payload, dict) else {}
     export_result = data.get("export_result") if isinstance(data.get("export_result"), dict) else {}
     return {
+        "accepted": data.get("accepted"),
+        "job_id": data.get("job_id"),
+        "status": data.get("status"),
+        "stopped_by_user": data.get("stopped_by_user"),
         "returncode": data.get("returncode"),
         "dataset_dir": data.get("dataset_dir"),
+        "output_dir": data.get("output_dir"),
+        "log_file": data.get("log_file"),
+        "artifacts_after": data.get("artifacts_after"),
+        "new_artifacts_count": len(data.get("new_artifacts", [])) if isinstance(data.get("new_artifacts"), list) else None,
         "prepared_dataset": data.get("prepared_dataset"),
         "identities_exported": export_result.get("identities_exported"),
+    }
+
+
+def _load_local_train_jobs(*, status: str | None = None, limit: int = 50) -> list[dict]:
+    try:
+        root = _resolve_dnaduck_root()
+        cfg = _resolve_dnaduck_config(root)
+        state_path = cfg.parent / ".dnaduck_train_jobs.json"
+        if not state_path.exists():
+            return []
+        raw_payload = json.loads(state_path.read_text(encoding="utf-8"))
+        rows = raw_payload.get("jobs") if isinstance(raw_payload, dict) else []
+        if not isinstance(rows, list):
+            return []
+        statuses = _normalize_status_set(status)
+        jobs: list[dict] = []
+        for row in rows:
+            summary = _summarize_local_train_job(row)
+            if not summary:
+                continue
+            if statuses and str(summary.get("status", "")).lower() not in statuses:
+                continue
+            jobs.append(summary)
+        jobs.sort(key=lambda item: float(item.get("created_at") or 0.0), reverse=True)
+        return jobs[: max(1, int(limit))]
+    except Exception:
+        return []
+
+
+def _normalize_status_set(value: str | None) -> set[str] | None:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return None
+    values = {item.strip() for item in raw.split(",") if item.strip()}
+    return values or None
+
+
+def _safe_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _summarize_local_train_job(raw: object) -> dict:
+    if not isinstance(raw, dict):
+        return {}
+    request = raw.get("request") if isinstance(raw.get("request"), dict) else {}
+    result = raw.get("result") if isinstance(raw.get("result"), dict) else {}
+    raw_ids = request.get("identity_ids") if isinstance(request.get("identity_ids"), list) else []
+    identity_ids: list[int] = []
+    for value in raw_ids:
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            identity_ids.append(parsed)
+    created_at = raw.get("created_at")
+    try:
+        created_at = float(created_at)
+    except (TypeError, ValueError):
+        created_at = 0.0
+    return {
+        "job_id": raw.get("job_id"),
+        "status": raw.get("status"),
+        "operation": raw.get("operation"),
+        "created_at": created_at,
+        "updated_at": raw.get("updated_at"),
+        "started_at": raw.get("started_at"),
+        "finished_at": raw.get("finished_at"),
+        "cancel_requested": bool(raw.get("cancel_requested")),
+        "resumed_from_job_id": raw.get("resumed_from_job_id"),
+        "request_summary": {
+            "output_folder": request.get("output_folder"),
+            "min_images": request.get("min_images"),
+            "identity_ids": identity_ids,
+            "identity_count": len(identity_ids),
+            "prepare_dataset": bool(request.get("prepare_dataset")),
+        },
+        "result_summary": {
+            "returncode": result.get("returncode"),
+            "stopped_by_user": bool(result.get("stopped_by_user")),
+            "dataset_dir": result.get("dataset_dir"),
+            "output_dir": result.get("output_dir"),
+            "log_file": result.get("log_file"),
+            "new_artifacts_count": len(result.get("new_artifacts", []))
+            if isinstance(result.get("new_artifacts"), list)
+            else None,
+        },
+        "error": raw.get("error"),
     }
 
 
@@ -708,6 +1017,8 @@ def _resolve_backend_target(start_managed: bool) -> BackendTarget:
     if mode == "managed_api":
         managed = _ensure_managed_api(start=start_managed)
         if not managed:
+            if not start_managed:
+                return BackendTarget(mode="managed_api", api_base=None)
             raise HTTPException(status_code=500, detail="Managed DNADuck API could not be started.")
         return BackendTarget(mode="managed_api", api_base=managed)
 
@@ -795,7 +1106,7 @@ def _ensure_managed_api(start: bool) -> str | None:
 
 def _remote_health_ok(base: str) -> bool:
     try:
-        _remote_request(base, "GET", "/health")
+        _remote_request(base, "GET", "/health", timeout_s=REMOTE_TIMEOUT_HEALTH_S)
         return True
     except Exception:
         return False
@@ -807,6 +1118,7 @@ def _remote_request(
     path: str,
     payload: dict | None = None,
     query: dict[str, str] | None = None,
+    timeout_s: int | float = REMOTE_TIMEOUT_DEFAULT_S,
 ) -> dict | list:
     url = f"{base}{path}"
     if query:
@@ -820,7 +1132,7 @@ def _remote_request(
 
     req = urllib_request.Request(url=url, data=data_bytes, method=method.upper(), headers=headers)
     try:
-        with urllib_request.urlopen(req, timeout=300) as response:
+        with urllib_request.urlopen(req, timeout=float(timeout_s)) as response:
             body = response.read().decode("utf-8", errors="replace")
             content_type = response.headers.get("Content-Type", "")
             if "application/json" in content_type:

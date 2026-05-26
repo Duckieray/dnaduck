@@ -285,6 +285,11 @@ def run_lora_export(config: dict) -> dict:
     output_folder = Path(config["output_folder"]).resolve()
     link_mode = str(config.get("lora_link_mode", "hardlink"))
     min_images = int(config.get("lora_min_images", 5))
+    face_crop = bool(config.get("lora_face_crop_enabled", False))
+    face_crop_size = int(config.get("lora_face_crop_size", 1024))
+    face_crop_padding = float(config.get("lora_face_crop_padding", 0.35))
+    face_crop_model_name = str(config.get("lora_face_crop_model_name", config.get("model_name", "buffalo_l")))
+    face_crop_use_gpu = bool(config.get("lora_face_crop_use_gpu", False))
     identity_ids = config.get("lora_identity_ids")
     selected_ids = None
     if isinstance(identity_ids, list):
@@ -300,6 +305,11 @@ def run_lora_export(config: dict) -> dict:
             min_images=min_images,
             identity_ids=selected_ids,
             overwrite=overwrite,
+            face_crop=face_crop,
+            face_crop_size=face_crop_size,
+            face_crop_padding=face_crop_padding,
+            face_crop_model_name=face_crop_model_name,
+            face_crop_use_gpu=face_crop_use_gpu,
         )
     finally:
         conn.close()

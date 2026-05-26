@@ -172,6 +172,33 @@ Then run:
 python3 main.py train-lora
 ```
 
+If DNADuck reports missing `toml` or `accelerate`, install them in the same environment:
+
+```bash
+pip install toml accelerate
+```
+
+Speed note:
+
+- `kohya_optimizer_type` defaults to `auto`:
+  - uses `AdamW8bit` when `bitsandbytes` is installed,
+  - otherwise falls back to `AdamW`.
+- `kohya_attention_backend` defaults to `auto`:
+  - uses `xformers` when installed,
+  - otherwise falls back to `sdpa`.
+
+For the fastest path on supported systems:
+
+```bash
+pip install bitsandbytes xformers
+```
+
+or:
+
+```bash
+pip install -r requirements-train-speed.txt
+```
+
 DNADuck will invoke `tools/train_kohya_lora.py`, auto-build a dataset config TOML from `lora_export`, and launch `accelerate`.
 
 ### Custom Trainer Command (override)
@@ -193,6 +220,15 @@ or:
 ```bash
 curl -X POST http://127.0.0.1:8025/train/lora -H "Content-Type: application/json" -d '{}'
 ```
+
+Background training behavior:
+
+- Default `POST /train/lora` returns quickly with `accepted=true` and a `job_id`.
+- Check `GET /jobs/train/active` for current training job.
+- Check `GET /jobs/{job_id}` for final status/result.
+- Pause active training with `POST /jobs/train/pause`.
+- After pausing, start `/train/lora` again to auto-resume from the latest saved state folder.
+- For blocking mode, call `POST /train/lora` with `{"wait_for_result": true}`.
 
 ## 10) WebbDuck Plugin Integration Test
 

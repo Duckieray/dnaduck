@@ -22,6 +22,11 @@ trainer/sd-scripts/
 models/base/
 checkpoints/
 
+# Environment / secrets
+.env
+.env.local
+.env*.local
+
 # OS/editor noise
 .DS_Store
 Thumbs.db

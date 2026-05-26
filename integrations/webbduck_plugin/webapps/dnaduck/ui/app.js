@@ -14,6 +14,8 @@
   let selectedIdentityRows = [];
   let selectedExportIdentityIds = new Set();
   let eventFeed = [];
+  let lastActivityNoticeKey = null;
+  let pausedJobsCache = [];
 
   function byId(id) {
     return document.getElementById(id);
@@ -40,12 +42,24 @@
     return n.toLocaleString();
   }
 
+  function firstNonEmptyLine(text) {
+    const raw = String(text || "");
+    const lines = raw.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    return lines.length ? lines[0] : "";
+  }
+
   function formatDuration(seconds) {
     const total = Math.max(0, Math.floor(Number(seconds || 0)));
     const mins = Math.floor(total / 60);
     const secs = total % 60;
     if (mins <= 0) return `${secs}s`;
     return `${mins}m ${secs.toString().padStart(2, "0")}s`;
+  }
+
+  function formatDateTime(epochSeconds) {
+    const num = Number(epochSeconds);
+    if (!Number.isFinite(num) || num <= 0) return "unknown time";
+    return new Date(num * 1000).toLocaleString();
   }
 
   function nowStamp() {
@@ -228,6 +242,108 @@
     return result;
   }
 
+  function compactIdentityList(identityIds) {
+    const ids = Array.isArray(identityIds)
+      ? identityIds.map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0)
+      : [];
+    if (!ids.length) return "all eligible groups";
+    if (ids.length <= 6) return `groups ${ids.join(", ")}`;
+    const preview = ids.slice(0, 6).join(", ");
+    return `groups ${preview} (+${ids.length - 6} more)`;
+  }
+
+  function pausedJobLabel(job) {
+    const request = job && typeof job.request_summary === "object" ? job.request_summary : {};
+    const identityIds = Array.isArray(request.identity_ids) ? request.identity_ids : [];
+    const status = String(job?.status || "paused");
+    const createdAt = formatDateTime(job?.created_at);
+    const identityText = compactIdentityList(identityIds);
+    const shortJobId = String(job?.job_id || "").slice(0, 8) || "unknown";
+    return `${shortJobId} | ${status} | ${identityText} | ${createdAt}`;
+  }
+
+  function pausedJobSummary(job) {
+    if (!job || typeof job !== "object") {
+      return "Paused runs remember their character selection and training settings.";
+    }
+    const request = job && typeof job.request_summary === "object" ? job.request_summary : {};
+    const result = job && typeof job.result_summary === "object" ? job.result_summary : {};
+    const identityIds = Array.isArray(request.identity_ids) ? request.identity_ids : [];
+    const parts = [];
+    parts.push(`Created: ${formatDateTime(job.created_at)}`);
+    parts.push(`Characters: ${compactIdentityList(identityIds)}`);
+    if (request.min_images != null) parts.push(`Min photos: ${request.min_images}`);
+    if (request.output_folder) parts.push(`Output: ${request.output_folder}`);
+    if (result.output_dir) parts.push(`Trainer output: ${result.output_dir}`);
+    return parts.join(" | ");
+  }
+
+  function getSelectedPausedJob() {
+    const selectedId = String(byId("paused-job-select")?.value || "").trim();
+    if (!selectedId) return null;
+    return pausedJobsCache.find((job) => String(job?.job_id || "").trim() === selectedId) || null;
+  }
+
+  function updatePausedJobSummary() {
+    setText("paused-job-summary", pausedJobSummary(getSelectedPausedJob()));
+  }
+
+  function renderPausedJobs(jobs, preferredJobId) {
+    const select = byId("paused-job-select");
+    if (!select) return;
+    pausedJobsCache = Array.isArray(jobs) ? jobs : [];
+    const preferred = String(preferredJobId || select.value || "").trim();
+    select.innerHTML = "";
+
+    if (!pausedJobsCache.length) {
+      const option = document.createElement("option");
+      option.value = "";
+      option.textContent = "No paused runs found.";
+      select.appendChild(option);
+      select.disabled = true;
+      updatePausedJobSummary();
+      return;
+    }
+
+    for (const job of pausedJobsCache) {
+      const option = document.createElement("option");
+      option.value = String(job.job_id || "");
+      option.textContent = pausedJobLabel(job);
+      select.appendChild(option);
+    }
+    select.disabled = false;
+    if (preferred) {
+      const exists = pausedJobsCache.some((job) => String(job.job_id || "") === preferred);
+      if (exists) select.value = preferred;
+    }
+    if (!select.value && pausedJobsCache[0]) {
+      select.value = String(pausedJobsCache[0].job_id || "");
+    }
+    updatePausedJobSummary();
+  }
+
+  async function loadPausedJobs(preferredJobId) {
+    try {
+      const response = await get("/train-jobs?status=paused&limit=100");
+      const jobs = Array.isArray(response?.jobs) ? response.jobs : [];
+      renderPausedJobs(jobs, preferredJobId);
+      return jobs;
+    } catch (error) {
+      const select = byId("paused-job-select");
+      if (select) {
+        select.innerHTML = "";
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "Paused runs unavailable in this mode.";
+        select.appendChild(option);
+        select.disabled = true;
+      }
+      pausedJobsCache = [];
+      setText("paused-job-summary", `Could not load paused runs: ${error.message}`);
+      return [];
+    }
+  }
+
   function renderActivity(activity) {
     const dot = byId("activity-dot");
     const state = byId("activity-state");
@@ -242,10 +358,14 @@
       ? payload.remote_activity
       : null;
     const active = remote || payload;
-    const running = Boolean(active.running ?? payload.running);
+    const running = (remote && typeof remote.running === "boolean")
+      ? Boolean(remote.running)
+      : Boolean(payload.running);
     const operation = String(active.operation || payload.operation || "").trim();
     const stage = String(active.stage || payload.stage || "").trim();
     const lastError = String(active.last_error || payload.last_error || "").trim();
+    const rawMessage = String(active.message || payload.message || "").trim();
+    const isPausedState = !running && operation === "train_lora" && /paused/i.test(rawMessage);
 
     dot.classList.remove("running", "error");
     if (running) {
@@ -253,17 +373,19 @@
       if (operation === "scan_recluster") state.textContent = "Starting Fresh Scan";
       else if (operation === "scan") state.textContent = "Finding Similar Faces";
       else if (operation === "export_lora") state.textContent = "Preparing Training Set";
-      else if (operation === "train_lora") state.textContent = "Launching Training";
+      else if (operation === "train_lora") state.textContent = "Training";
       else state.textContent = "Working";
       if (stage) state.textContent += ` (${stage})`;
     } else if (lastError) {
       dot.classList.add("error");
       state.textContent = "Needs Attention";
+    } else if (isPausedState) {
+      state.textContent = "Paused";
     } else {
       state.textContent = "Ready";
     }
 
-    const msg = String(active.message || payload.message || "").trim();
+    const msg = rawMessage;
     message.textContent = msg || (running ? "Working..." : "No active task.");
     if (running && (operation === "scan" || operation === "scan_recluster")) {
       message.textContent += " First run may download model files.";
@@ -286,18 +408,28 @@
     const assigned = Number(active.assigned_count);
     const noise = Number(active.noise_count);
     const noFace = Number(active.no_face_count);
+    const etaS = Number(active.eta_s);
+    const progressPct = Number(active.progress_pct);
 
     let barWidth = 0;
     if (Number.isFinite(processed) && Number.isFinite(total) && total > 0) {
       barWidth = Math.max(0, Math.min(100, (processed / total) * 100));
-      progress.textContent = `Progress: ${numberText(processed)} of ${numberText(total)} images`;
+      if (operation === "train_lora") {
+        const pctText = Number.isFinite(progressPct)
+          ? `${Math.max(0, Math.min(100, progressPct)).toFixed(1)}%`
+          : `${((processed / total) * 100).toFixed(1)}%`;
+        const etaText = Number.isFinite(etaS) && etaS >= 0 ? ` | ETA: ${formatDuration(etaS)}` : "";
+        progress.textContent = `Progress: step ${numberText(processed)} / ${numberText(total)} (${pctText})${etaText}`;
+      } else {
+        progress.textContent = `Progress: ${numberText(processed)} of ${numberText(total)} images`;
+      }
     } else if (Number.isFinite(discovered) && discovered > 0 && Number.isFinite(toProcess) && toProcess >= 0) {
       const checked = Math.max(0, discovered - toProcess);
       barWidth = Math.max(0, Math.min(100, (checked / discovered) * 100));
       progress.textContent = `Checked ${numberText(checked)} of ${numberText(discovered)} files`;
     } else if (running) {
       barWidth = 20;
-      progress.textContent = "Preparing files...";
+      progress.textContent = operation === "train_lora" ? "Training in progress..." : "Preparing files...";
     } else {
       progress.textContent = "No active work.";
     }
@@ -311,9 +443,15 @@
       review_count: reviewCount,
     });
 
+    const completedAt = active.last_completed_at ?? payload.last_completed_at;
+
     if (!running && lastError) {
       setText("last-action-text", `Could not finish: ${lastError}`);
-      addEvent(`Action failed: ${lastError}`);
+      const errorKey = `error:${operation}:${String(completedAt || "")}:${lastError}`;
+      if (lastActivityNoticeKey !== errorKey) {
+        addEvent(`Action failed: ${lastError}`);
+        lastActivityNoticeKey = errorKey;
+      }
     } else if (!running && stage === "complete") {
       setText("last-action-text", "Latest action completed successfully.");
     }
@@ -323,7 +461,11 @@
       const review = (Number.isFinite(noise) ? noise : 0) + (Number.isFinite(noFace) ? noFace : 0);
       setStatValues({ review_count: review, new_processed: Number.isFinite(processed) ? processed : null });
       if (!running) {
-        addEvent(`Grouped ${numberText(grouped)} images. ${numberText(review)} need review.`);
+        const completeKey = `complete:${operation}:${String(completedAt || "")}:${grouped}:${review}`;
+        if (lastActivityNoticeKey !== completeKey) {
+          addEvent(`Grouped ${numberText(grouped)} images. ${numberText(review)} need review.`);
+          lastActivityNoticeKey = completeKey;
+        }
       }
     }
   }
@@ -333,8 +475,10 @@
     const remote = payload.remote_activity && typeof payload.remote_activity === "object"
       ? payload.remote_activity
       : null;
-    const active = remote || payload;
-    return Boolean(active.running ?? payload.running);
+    if (remote && typeof remote.running === "boolean") {
+      return Boolean(remote.running);
+    }
+    return Boolean(payload.running);
   }
 
   function scheduleActivityPoll(delayMs) {
@@ -497,6 +641,7 @@
     const selectedIds = getSelectedIdsForExport();
     if (selectedIds && !selectedIds.length) {
       setText("training-status", "Select at least one character group first, or turn off 'Use only selected character groups'.");
+      setText("training-detail", "");
       addEvent("Export skipped because no character groups are selected.");
       return;
     }
@@ -513,12 +658,14 @@
     });
     const data = exportPayloadFromResponse(result);
     const requestedIds = Array.isArray(data.requested_identity_ids) ? data.requested_identity_ids : [];
+    const out = String(data.output_folder || "").trim();
     setText(
       "training-status",
       requestedIds.length
         ? `Dataset ready from ${numberText(data.identities_exported)} selected groups (${numberText(data.images_exported)} images).`
         : `Dataset ready: ${numberText(data.identities_exported)} character groups and ${numberText(data.images_exported)} images.`
     );
+    setText("training-detail", out ? `Dataset folder: ${out}` : "");
     setText("last-action-text", "Training dataset export completed.");
     addEvent("Training set export completed.");
     await pollActivity();
@@ -530,6 +677,7 @@
     const selectedIds = getSelectedIdsForExport();
     if (selectedIds && !selectedIds.length) {
       setText("training-status", "Select at least one character group first, or turn off 'Use only selected character groups'.");
+      setText("training-detail", "");
       addEvent("Training skipped because no character groups are selected.");
       return;
     }
@@ -546,17 +694,49 @@
       prepare_dataset: true,
     });
     const data = trainPayloadFromResponse(result);
+    const accepted = Boolean(data.accepted);
+    const jobId = String(data.job_id || "").trim();
+    const jobStatus = String(data.status || "").trim();
     const returnCode = Number(data.returncode);
     const exportInfo = data && typeof data.export_result === "object" ? data.export_result : null;
+    const outputDir = String(data.output_dir || "").trim();
+    const datasetDir = String(data.dataset_dir || "").trim();
+    const logFile = String(data.log_file || "").trim();
+    const stderrLine = firstNonEmptyLine(data.stderr);
+    const stdoutLine = firstNonEmptyLine(data.stdout);
+    const newArtifacts = Array.isArray(data.new_artifacts) ? data.new_artifacts : [];
+    const artifactsAfter = Number(data.artifacts_after);
+
     if (exportInfo && Number.isFinite(Number(exportInfo.images_exported))) {
       addEvent(
         `Prepared ${numberText(exportInfo.identities_exported)} groups and ${numberText(exportInfo.images_exported)} images before training.`
       );
     }
+    if (accepted) {
+      setText("training-status", "Training started in background.");
+      setText(
+        "training-detail",
+        jobId
+          ? `Job ID: ${jobId}${jobStatus ? ` | Status: ${jobStatus}` : ""}`
+          : "Background training request accepted."
+      );
+      addEvent(jobId ? `Training started. Job ID: ${jobId}.` : "Training started in background.");
+      setText("last-action-text", "Training started in background.");
+      await pollActivity();
+      return;
+    }
     if (Number.isFinite(returnCode)) {
       if (returnCode === 0) {
-        setText("training-status", "Trainer finished successfully.");
-        addEvent("Training command completed successfully.");
+        if (newArtifacts.length > 0) {
+          setText("training-status", `Trainer finished successfully. New LoRA file: ${basename(newArtifacts[0])}`);
+          addEvent(`Training completed. New LoRA file: ${basename(newArtifacts[0])}.`);
+        } else if (Number.isFinite(artifactsAfter) && artifactsAfter > 0) {
+          setText("training-status", `Trainer finished successfully. Output folder currently has ${numberText(artifactsAfter)} LoRA file(s).`);
+          addEvent("Training completed. No new file name was detected this run.");
+        } else {
+          setText("training-status", "Trainer finished, but no LoRA files were found in the output folder.");
+          addEvent("Training finished but produced no LoRA files.");
+        }
       } else {
         setText("training-status", `Trainer finished with code ${returnCode}.`);
         addEvent(`Training command returned code ${returnCode}.`);
@@ -565,8 +745,105 @@
       setText("training-status", "Training command sent.");
       addEvent("Training command sent.");
     }
+    if (outputDir && logFile) {
+      setText("training-detail", `Output folder: ${outputDir} | Log: ${logFile}`);
+    } else if (outputDir) {
+      setText("training-detail", `Output folder: ${outputDir}`);
+    } else if (logFile) {
+      setText("training-detail", `Run log: ${logFile}`);
+    } else if (datasetDir) {
+      setText("training-detail", `Dataset folder used: ${datasetDir}`);
+    } else if (stderrLine || stdoutLine) {
+      setText("training-detail", stderrLine || stdoutLine);
+    } else {
+      setText("training-detail", "");
+    }
+    if (logFile) {
+      addEvent(`Training log saved: ${logFile}`);
+    }
+    if (stderrLine && returnCode !== 0) {
+      addEvent(`Trainer error: ${stderrLine}`);
+    }
     setText("last-action-text", "Training action executed.");
     await pollActivity();
+  }
+
+  async function pauseTraining() {
+    const result = await post("/pause-training", {});
+    const data = result && typeof result === "object"
+      ? (result.result && typeof result.result === "object" ? result.result : result)
+      : {};
+    const ok = Boolean(data.ok);
+    const message = String(data.message || "").trim();
+    const jobId = String(data.job_id || "").trim();
+    const status = String(data.status || "").trim();
+    if (ok) {
+      setText("training-status", "Pause requested. Training will stop after the current step.");
+      setText(
+        "training-detail",
+        jobId
+          ? `Job ID: ${jobId}${status ? ` | Status: ${status}` : ""}`
+          : (message || "Pause requested.")
+      );
+      addEvent(jobId ? `Pause requested for job ${jobId}.` : "Pause requested.");
+      renderActivity({
+        running: true,
+        operation: "train_lora",
+        stage: "pausing",
+        message: message || "Pause requested. Stopping after current step...",
+      });
+      window.setTimeout(() => {
+        void loadPausedJobs();
+      }, 2500);
+      return;
+    }
+    setText("training-status", message || "No active training job to pause.");
+    if (jobId || status) {
+      setText("training-detail", `Job ID: ${jobId || "n/a"}${status ? ` | Status: ${status}` : ""}`);
+    }
+    addEvent(message || "Pause request was not accepted.");
+    await pollActivity();
+  }
+
+  async function resumeTraining() {
+    const selected = getSelectedPausedJob();
+    if (!selected) {
+      setText("training-status", "Pick a paused run first.");
+      setText("training-detail", "");
+      return;
+    }
+    const sourceJobId = String(selected.job_id || "").trim();
+    if (!sourceJobId) {
+      setText("training-status", "Selected paused run is missing a job ID.");
+      setText("training-detail", "");
+      return;
+    }
+    const response = await post("/resume-training", {
+      job_id: sourceJobId,
+      prepare_dataset: false,
+    });
+    const data = trainPayloadFromResponse(response);
+    if (Boolean(data.accepted)) {
+      const newJobId = String(data.job_id || "").trim();
+      setText("training-status", "Resumed training started in background.");
+      setText(
+        "training-detail",
+        `Resumed from ${sourceJobId}${newJobId ? ` | New Job ID: ${newJobId}` : ""}`
+      );
+      addEvent(
+        newJobId
+          ? `Resumed training: ${sourceJobId} -> ${newJobId}.`
+          : `Resumed training from ${sourceJobId}.`
+      );
+      setText("last-action-text", "Resumed training in background.");
+      await pollActivity();
+      await loadPausedJobs(sourceJobId);
+      return;
+    }
+    const message = String(data.message || "Resume request was not accepted.");
+    setText("training-status", message);
+    setText("training-detail", sourceJobId ? `Source Job ID: ${sourceJobId}` : "");
+    addEvent(`Resume request failed: ${message}`);
   }
 
   function basename(path) {
@@ -781,61 +1058,75 @@
   }
 
   function renderIdentityRows(identities) {
-    const tbody = byId("identity-table")?.querySelector("tbody");
-    if (!tbody) return;
-    tbody.innerHTML = "";
+    const container = byId("identity-table");
+    if (!container) return;
+    container.innerHTML = "";
 
     const rows = Array.isArray(identities) ? identities : [];
     identitiesCache = rows;
+
+    if (!rows.length) {
+      const empty = document.createElement("div");
+      empty.className = "identity-card-empty";
+      empty.textContent = "No character groups found for this filter.";
+      container.appendChild(empty);
+      updateSelectedExportSummary();
+      return;
+    }
+
     for (const item of rows) {
-      const tr = document.createElement("tr");
-      tr.className = "identity-row";
       const identityId = Number(item.identity_id || 0);
+      const label = String(item.label || "Unlabeled");
+      const memberCount = Number(item.member_count || 0);
+      const updatedAt = String(item.updated_at || "");
+
+      const card = document.createElement("div");
+      card.className = "identity-row-card";
       if (selectedIdentityId && identityId === selectedIdentityId) {
-        tr.classList.add("selected");
+        card.classList.add("selected");
       }
-      const selectTd = document.createElement("td");
-      selectTd.className = "identity-select-cell";
-      const selectInput = document.createElement("input");
-      selectInput.type = "checkbox";
-      selectInput.checked = selectedExportIdentityIds.has(identityId);
-      selectInput.addEventListener("click", (event) => {
+
+      // Checkbox
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.className = "identity-row-cb";
+      cb.checked = selectedExportIdentityIds.has(identityId);
+      cb.addEventListener("click", (event) => {
         event.stopPropagation();
       });
-      selectInput.addEventListener("change", () => {
-        if (selectInput.checked) selectedExportIdentityIds.add(identityId);
+      cb.addEventListener("change", () => {
+        if (cb.checked) selectedExportIdentityIds.add(identityId);
         else selectedExportIdentityIds.delete(identityId);
         updateSelectedExportSummary();
       });
-      selectTd.appendChild(selectInput);
-      tr.appendChild(selectTd);
+      card.appendChild(cb);
 
-      const idTd = document.createElement("td");
-      idTd.textContent = String(item.identity_id ?? "");
-      tr.appendChild(idTd);
+      // Main info
+      const info = document.createElement("div");
+      info.className = "identity-row-info";
 
-      const memberTd = document.createElement("td");
-      memberTd.textContent = String(item.member_count ?? "");
-      tr.appendChild(memberTd);
+      const nameEl = document.createElement("div");
+      nameEl.className = "identity-row-name";
+      nameEl.textContent = label;
+      info.appendChild(nameEl);
 
-      const labelTd = document.createElement("td");
-      labelTd.textContent = String(item.label ?? "Unlabeled");
-      tr.appendChild(labelTd);
+      const metaEl = document.createElement("div");
+      metaEl.className = "identity-row-meta";
+      metaEl.textContent = `Group ${identityId} · ${memberCount} photo${memberCount !== 1 ? "s" : ""}`;
+      info.appendChild(metaEl);
 
-      const updatedTd = document.createElement("td");
-      updatedTd.textContent = String(item.updated_at ?? "");
-      tr.appendChild(updatedTd);
+      card.appendChild(info);
 
-      tr.addEventListener("click", () => {
+      // Photo count badge
+      const countEl = document.createElement("div");
+      countEl.className = "identity-row-count";
+      countEl.textContent = String(memberCount);
+      card.appendChild(countEl);
+
+      card.addEventListener("click", () => {
         setSelectedIdentity(identityId);
       });
-      tbody.appendChild(tr);
-    }
-
-    if (!rows.length) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = '<td colspan="5">No character groups found for this filter.</td>';
-      tbody.appendChild(tr);
+      container.appendChild(card);
     }
     updateSelectedExportSummary();
   }
@@ -866,6 +1157,7 @@
   async function refreshAll() {
     await loadHealth();
     await loadIdentities();
+    await loadPausedJobs();
     setText("last-action-text", "Workspace refreshed.");
   }
 
@@ -944,6 +1236,7 @@
         await exportLora();
       } catch (error) {
         setText("training-status", `Could not prepare dataset: ${error.message}`);
+        setText("training-detail", "");
         addEvent(`Dataset export failed: ${error.message}`);
         renderActivity({
           running: false,
@@ -962,6 +1255,7 @@
         await trainLora();
       } catch (error) {
         setText("training-status", `Training launch failed: ${error.message}`);
+        setText("training-detail", "");
         addEvent(`Training launch failed: ${error.message}`);
         renderActivity({
           running: false,
@@ -971,6 +1265,47 @@
         });
       } finally {
         setButtonBusy("train-btn", false, "Start Training");
+      }
+    });
+
+    byId("pause-train-btn")?.addEventListener("click", async () => {
+      setButtonBusy("pause-train-btn", true, "Pausing...");
+      try {
+        await pauseTraining();
+      } catch (error) {
+        setText("training-status", `Pause request failed: ${error.message}`);
+        addEvent(`Pause request failed: ${error.message}`);
+      } finally {
+        setButtonBusy("pause-train-btn", false, "Pause Training");
+      }
+    });
+
+    byId("paused-job-select")?.addEventListener("change", () => {
+      updatePausedJobSummary();
+    });
+
+    byId("paused-refresh-btn")?.addEventListener("click", async () => {
+      setButtonBusy("paused-refresh-btn", true, "Refreshing...");
+      try {
+        await loadPausedJobs();
+        addEvent("Paused run list refreshed.");
+      } catch (error) {
+        addEvent(`Could not refresh paused runs: ${error.message}`);
+      } finally {
+        setButtonBusy("paused-refresh-btn", false, "Refresh");
+      }
+    });
+
+    byId("resume-train-btn")?.addEventListener("click", async () => {
+      setButtonBusy("resume-train-btn", true, "Resuming...");
+      try {
+        await resumeTraining();
+      } catch (error) {
+        setText("training-status", `Resume failed: ${error.message}`);
+        setText("training-detail", "");
+        addEvent(`Resume failed: ${error.message}`);
+      } finally {
+        setButtonBusy("resume-train-btn", false, "Resume Selected");
       }
     });
 
@@ -1067,7 +1402,8 @@
       await pollActivityAndReschedule();
       renderIdentityDetail(null, false);
       updateIdentityDetailButtons();
-      await refreshAll();
+      await loadHealth();
+      await loadPausedJobs();
       addEvent("DNADuck is ready.");
     } catch (error) {
       setText("last-action-text", `Startup issue: ${error.message}`);

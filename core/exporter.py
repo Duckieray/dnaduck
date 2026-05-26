@@ -3,8 +3,12 @@ from __future__ import annotations
 import os
 import shutil
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+import cv2
+import numpy as np
 from .utils import ensure_clean_dir, to_json_file, to_jsonl_file
 
 
@@ -136,9 +140,23 @@ def export_lora_dataset(
     min_images: int = 5,
     identity_ids: list[int] | None = None,
     overwrite: bool = True,
+    face_crop: bool = False,
+    face_crop_size: int = 1024,
+    face_crop_padding: float = 0.35,
+    face_crop_model_name: str = "buffalo_l",
+    face_crop_use_gpu: bool = False,
 ) -> dict:
     root = output_folder / "lora_export"
     ensure_clean_dir(root, overwrite=overwrite)
+    crop_size = max(256, int(face_crop_size))
+    crop_padding = max(0.0, float(face_crop_padding))
+    cropper = _FaceCropper(
+        enabled=bool(face_crop),
+        target_size=crop_size,
+        padding=crop_padding,
+        model_name=str(face_crop_model_name or "buffalo_l"),
+        use_gpu=bool(face_crop_use_gpu),
+    )
 
     selected_ids = sorted({int(v) for v in (identity_ids or []) if int(v) > 0})
     if selected_ids:
@@ -187,8 +205,15 @@ def export_lora_dataset(
             source = Path(row["path"])
             if not source.exists():
                 continue
-            destination = _next_available_target(images_dir / source.name)
-            _materialize_link(source, destination, link_mode)
+            destination = _next_available_target(
+                images_dir / (f"{source.stem}.jpg" if cropper.enabled else source.name)
+            )
+            transform = "none"
+            if cropper.enabled:
+                cropper.write_processed(source=source, destination=destination)
+                transform = f"face_crop_{cropper.target_size}"
+            else:
+                _materialize_link(source, destination, link_mode)
             caption_path = destination.with_suffix(".txt")
             caption_path.write_text(f"{label}\n", encoding="utf-8")
             metadata_rows.append(
@@ -197,6 +222,7 @@ def export_lora_dataset(
                     "source_path": str(source),
                     "caption": label,
                     "identity_id": identity_id,
+                    "transform": transform,
                 }
             )
             image_count += 1
@@ -218,6 +244,9 @@ def export_lora_dataset(
         "identities": identity_count,
         "images": image_count,
         "caption_mode": "identity_token",
+        "image_preprocess": (
+            f"face_crop_{cropper.target_size}" if cropper.enabled else "none"
+        ),
         "requested_identity_ids": selected_ids,
         "exported_identity_ids": exported_identity_ids,
     }
@@ -262,3 +291,89 @@ def _materialize_link(source: Path, destination: Path, mode: str) -> None:
                 return
 
     raise ValueError(f"Unsupported link mode: {mode}")
+
+
+@dataclass
+class _FaceCropper:
+    enabled: bool
+    target_size: int
+    padding: float
+    model_name: str
+    use_gpu: bool
+    _analyzer: Any | None = None
+
+    def write_processed(self, *, source: Path, destination: Path) -> None:
+        image = cv2.imread(str(source))
+        if image is None:
+            raise RuntimeError(f"Could not read image for face crop: {source}")
+        cropped = self._crop_face(image)
+        ok = cv2.imwrite(str(destination), cropped)
+        if not ok:
+            raise RuntimeError(f"Failed to write face-cropped image: {destination}")
+
+    def _crop_face(self, image_bgr: np.ndarray) -> np.ndarray:
+        h, w = image_bgr.shape[:2]
+        if h <= 0 or w <= 0:
+            return self._center_square(image_bgr)
+        bbox = self._detect_primary_face_bbox(image_bgr)
+        if bbox is None:
+            return self._center_square(image_bgr)
+        x1, y1, x2, y2 = bbox
+        fw = max(1.0, x2 - x1)
+        fh = max(1.0, y2 - y1)
+        cx = (x1 + x2) * 0.5
+        cy = (y1 + y2) * 0.5
+        side = max(fw, fh) * (1.0 + (2.0 * self.padding))
+        side = max(32.0, min(side, float(min(w, h))))
+        left = int(round(cx - (side * 0.5)))
+        top = int(round(cy - (side * 0.5)))
+        left = max(0, min(left, int(w - side)))
+        top = max(0, min(top, int(h - side)))
+        side_i = int(max(1, min(side, w - left, h - top)))
+        crop = image_bgr[top : top + side_i, left : left + side_i]
+        if crop.size == 0:
+            crop = self._center_square(image_bgr)
+        return cv2.resize(crop, (self.target_size, self.target_size), interpolation=cv2.INTER_AREA)
+
+    def _center_square(self, image_bgr: np.ndarray) -> np.ndarray:
+        h, w = image_bgr.shape[:2]
+        side = min(h, w)
+        top = max(0, (h - side) // 2)
+        left = max(0, (w - side) // 2)
+        crop = image_bgr[top : top + side, left : left + side]
+        if crop.size == 0:
+            crop = image_bgr
+        return cv2.resize(crop, (self.target_size, self.target_size), interpolation=cv2.INTER_AREA)
+
+    def _detect_primary_face_bbox(self, image_bgr: np.ndarray) -> tuple[float, float, float, float] | None:
+        analyzer = self._get_analyzer()
+        if analyzer is None:
+            return None
+        try:
+            faces = analyzer.get(image_bgr)
+        except Exception:
+            return None
+        if not faces:
+            return None
+        face = max(faces, key=lambda item: float(max(0.0, item.bbox[2] - item.bbox[0])) * float(max(0.0, item.bbox[3] - item.bbox[1])))
+        x1, y1, x2, y2 = [float(v) for v in face.bbox]
+        return x1, y1, x2, y2
+
+    def _get_analyzer(self):
+        if self._analyzer is not None:
+            return self._analyzer
+        try:
+            from insightface.app import FaceAnalysis
+        except Exception as exc:
+            raise RuntimeError(
+                "Face-crop export requires InsightFace. Install dependencies from requirements.txt."
+            ) from exc
+        providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if self.use_gpu
+            else ["CPUExecutionProvider"]
+        )
+        analyzer = FaceAnalysis(name=self.model_name, providers=providers)
+        analyzer.prepare(ctx_id=0 if self.use_gpu else -1, det_size=(640, 640))
+        self._analyzer = analyzer
+        return self._analyzer
