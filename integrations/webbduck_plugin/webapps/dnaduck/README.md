@@ -2,9 +2,11 @@
 
 This plugin embeds DNADuck inside WebbDuck as an optional web-app plugin package distributed from the DNADuck repo.
 
+The same UI also runs standalone — the API server serves it at `/ui/` for direct browser access without WebbDuck.
+
 ## What it does
 
-- Adds a `DNADuck` tab in WebbDuck UI.
+- Adds a `DNADuck` tab in WebbDuck UI with three tabs: **Studio**, **Characters**, **Config**.
 - Hosts plugin UI at `/plugins/web/dnaduck/ui/index.html`.
 - Exposes plugin API at `/plugins/web/dnaduck/api/*`.
 - Supports connection modes:
@@ -82,6 +84,25 @@ Connection API endpoints:
 
 - `GET /plugins/web/dnaduck/api/connection`
 - `POST /plugins/web/dnaduck/api/connection`
+
+### Config management (proxy)
+
+When the plugin backend is in API mode (managed or remote), config endpoints proxy to the DNADuck API server supporting config switching. In local_cli mode, config read/write works directly on the YAML file but switching requires the API server.
+
+- `GET /plugins/web/dnaduck/api/configs`
+- `GET /plugins/web/dnaduck/api/config`
+- `POST /plugins/web/dnaduck/api/config/switch`
+- `PUT /plugins/web/dnaduck/api/config`
+
+## Standalone (without WebbDuck)
+
+Run the API server and open `http://localhost:8025/ui/` in a browser:
+
+```bash
+python3 run_api.py --config ./config.yaml --port 8025
+```
+
+The full UI (Studio, Characters, Config tabs) works standalone without WebbDuck connected.
 
 ## Your Two Cases
 

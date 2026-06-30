@@ -7,8 +7,11 @@ import time
 import uuid
 from pathlib import Path
 
+import yaml
+
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.service import (
@@ -71,6 +74,14 @@ class ImageActionRequest(BaseModel):
     action: str = Field(..., description="remove | blacklist | restore")
 
 
+class SwitchConfigRequest(BaseModel):
+    config: str = Field(..., description="Config filename relative to config directory")
+
+
+class UpdateConfigRequest(BaseModel):
+    updates: dict = Field(..., description="Key-value pairs to update in the config YAML")
+
+
 _ACTIVITY_LOCK = threading.Lock()
 _ACTIVITY: dict = {
     "running": False,
@@ -102,6 +113,7 @@ _TRAIN_JOBS: dict[str, dict] = {}
 _ACTIVE_TRAIN_JOB_ID: str | None = None
 _MAX_TRAIN_JOBS = 100
 _TRAIN_JOBS_STATE_PATH: Path | None = None
+_ACTIVE_CONFIG_PATH: Path | None = None
 
 
 def _normalize_optional_path(value: str | None) -> str | None:
@@ -713,11 +725,13 @@ def _run_train_job(job_id: str, cfg_path: Path, payload: dict) -> None:
 def create_app(config_path: str | None = None) -> FastAPI:
     app = FastAPI(title="DNADuck API", version="0.1.0")
     cfg_path = Path(config_path or os.environ.get("DNADUCK_CONFIG", "config.yaml")).resolve()
-    _load_train_jobs_state(cfg_path)
+    global _ACTIVE_CONFIG_PATH
+    _ACTIVE_CONFIG_PATH = cfg_path
+    _load_train_jobs_state(_ACTIVE_CONFIG_PATH)
 
     @app.get("/health")
     def health() -> dict:
-        return {"ok": True, "config_path": str(cfg_path)}
+        return {"ok": True, "config_path": str(_ACTIVE_CONFIG_PATH)}
 
     @app.get("/activity")
     def activity() -> dict:
@@ -772,7 +786,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             job_id = str(job["job_id"])
             thread = threading.Thread(
                 target=_run_train_job,
-                kwargs={"job_id": job_id, "cfg_path": cfg_path, "payload": resume_payload},
+                kwargs={"job_id": job_id, "cfg_path": _ACTIVE_CONFIG_PATH, "payload": resume_payload},
                 daemon=True,
                 name=f"dnaduck-train-{job_id[:8]}",
             )
@@ -834,7 +848,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         )
         try:
             result = scan_images(
-                config_path=cfg_path,
+                config_path=_ACTIVE_CONFIG_PATH,
                 overrides=overrides,
                 progress_callback=_activity_update,
             )
@@ -864,7 +878,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         )
         try:
             result = scan_recluster_from_scratch(
-                config_path=cfg_path,
+                config_path=_ACTIVE_CONFIG_PATH,
                 overrides=overrides,
                 progress_callback=_activity_update,
             )
@@ -882,7 +896,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/identities")
     def identities(min_members: int = 1) -> list[dict]:
-        return get_identities(config_path=cfg_path, min_members=min_members)
+        return get_identities(config_path=_ACTIVE_CONFIG_PATH, min_members=min_members)
 
     @app.get("/identity/{identity_id}")
     def identity_detail(
@@ -891,7 +905,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         offset: int = Query(default=0, ge=0),
     ) -> dict:
         data = get_identity_detail(
-            config_path=cfg_path,
+            config_path=_ACTIVE_CONFIG_PATH,
             identity_id=identity_id,
             limit=limit,
             offset=offset,
@@ -902,7 +916,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/identity/{identity_id}/label")
     def identity_label(identity_id: int, payload: RelabelRequest) -> dict:
-        updated = relabel_identity(config_path=cfg_path, identity_id=identity_id, label=payload.label)
+        updated = relabel_identity(config_path=_ACTIVE_CONFIG_PATH, identity_id=identity_id, label=payload.label)
         if not updated:
             raise HTTPException(status_code=404, detail="Identity not found")
         return {"updated": True, "identity_id": identity_id, "label": payload.label}
@@ -910,7 +924,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/identity/merge")
     def identity_merge(payload: MergeRequest) -> dict:
         merge_identity_groups(
-            config_path=cfg_path,
+            config_path=_ACTIVE_CONFIG_PATH,
             target_id=payload.target_id,
             source_ids=payload.source_ids,
         )
@@ -920,7 +934,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     def search(payload: SearchRequest) -> dict:
         try:
             rows = search_by_image(
-                config_path=cfg_path,
+                config_path=_ACTIVE_CONFIG_PATH,
                 image_path=Path(_normalize_optional_path(payload.image_path) or ""),
                 top_k=payload.top_k,
             )
@@ -941,7 +955,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if payload.identity_ids:
             overrides["lora_identity_ids"] = [int(v) for v in payload.identity_ids if int(v) > 0]
         try:
-            result = export_lora(config_path=cfg_path, overrides=overrides)
+            result = export_lora(config_path=_ACTIVE_CONFIG_PATH, overrides=overrides)
             _activity_finish(result=result, message="Training set prepared.")
             return result
         except FileNotFoundError as exc:
@@ -972,7 +986,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             job_id = str(job["job_id"])
 
             if bool(payload.wait_for_result):
-                _run_train_job(job_id=job_id, cfg_path=cfg_path, payload=request_payload)
+                _run_train_job(job_id=job_id, cfg_path=_ACTIVE_CONFIG_PATH, payload=request_payload)
                 completed = _get_train_job(job_id)
                 if not completed:
                     raise HTTPException(status_code=500, detail="Training job disappeared unexpectedly.")
@@ -986,7 +1000,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
             thread = threading.Thread(
                 target=_run_train_job,
-                kwargs={"job_id": job_id, "cfg_path": cfg_path, "payload": request_payload},
+                kwargs={"job_id": job_id, "cfg_path": _ACTIVE_CONFIG_PATH, "payload": request_payload},
                 daemon=True,
                 name=f"dnaduck-train-{job_id[:8]}",
             )
@@ -1016,7 +1030,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail="image_path is required")
         try:
             return apply_image_action(
-                config_path=cfg_path,
+                config_path=_ACTIVE_CONFIG_PATH,
                 image_path=Path(image_path),
                 action=payload.action,
             )
@@ -1036,6 +1050,62 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if not image_path.exists() or not image_path.is_file():
             raise HTTPException(status_code=404, detail=f"Image not found: {image_path}")
         return FileResponse(str(image_path))
+
+    # ── Config management ────────────────────────────────────────────
+
+    @app.get("/config")
+    def get_config() -> dict:
+        cfg = load_config(_ACTIVE_CONFIG_PATH.resolve())
+        return dict(cfg)
+
+    @app.get("/configs")
+    def list_configs() -> dict:
+        root = _ACTIVE_CONFIG_PATH.parent.resolve()
+        files = sorted(root.glob("*.yaml")) + sorted(root.glob("*.yml"))
+        current = _ACTIVE_CONFIG_PATH.resolve()
+        return {
+            "configs": [_safe_rel_path(f, root) for f in files],
+            "current": _safe_rel_path(current, root),
+            "current_path": str(current),
+            "root": str(root),
+        }
+
+    def _safe_rel_path(path: Path, anchor: Path) -> str:
+        try:
+            return str(path.relative_to(anchor))
+        except ValueError:
+            return str(path)
+
+    @app.post("/config/switch")
+    def switch_config(payload: SwitchConfigRequest) -> dict:
+        global _ACTIVE_CONFIG_PATH
+        root = _ACTIVE_CONFIG_PATH.parent.resolve()
+        new_path = (root / payload.config).resolve()
+        try:
+            new_path = new_path.resolve()
+        except Exception:
+            pass
+        if not new_path.exists():
+            raise HTTPException(status_code=404, detail=f"Config file not found: {payload.config}")
+        _ACTIVE_CONFIG_PATH = new_path
+        _load_train_jobs_state(_ACTIVE_CONFIG_PATH)
+        return {"ok": True, "config": str(new_path)}
+
+    @app.put("/config")
+    def update_config(payload: UpdateConfigRequest) -> dict:
+        cfg_path = _ACTIVE_CONFIG_PATH.resolve()
+        cfg = load_config(cfg_path)
+        for key, value in payload.updates.items():
+            cfg[key] = value
+        with cfg_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        return {"ok": True, "updated": list(payload.updates.keys())}
+
+    # ── Static UI files (standalone mode) ────────────────────────────
+
+    _ui_path = Path(__file__).resolve().parent.parent / "integrations" / "webbduck_plugin" / "webapps" / "dnaduck" / "ui"
+    if _ui_path.exists():
+        app.mount("/ui", StaticFiles(directory=str(_ui_path), html=True), name="ui")
 
     return app
 

@@ -5,6 +5,8 @@
 DNADuck is a local identity extraction and clustering system for image datasets.
 It recursively scans directories, embeds faces, clusters/assigns identities, and exports reusable metadata for downstream tooling (including LoRA dataset prep) without requiring image duplication.
 
+DNADuck includes a full-featured **web UI** accessible both as a WebbDuck plugin and as a standalone browser app.
+
 ## Implemented Phases
 
 - Phase A: Batch face embedding and DBSCAN clustering.
@@ -18,7 +20,7 @@ It recursively scans directories, embeds faces, clusters/assigns identities, and
 dnaduck/
 ├── trainer/
 │   ├── README.md
-│   └── sd-scripts/           # place kohya-ss sd-scripts here
+│   └── sd-scripts/              # place kohya-ss sd-scripts here
 ├── core/
 │   ├── cluster.py
 │   ├── database.py
@@ -29,6 +31,15 @@ dnaduck/
 │   └── utils.py
 ├── server/
 │   └── app.py
+├── integrations/
+│   └── webbduck_plugin/
+│       └── webapps/dnaduck/     # plugin + standalone webui
+│           ├── backend.py
+│           ├── plugin.json
+│           └── ui/
+│               ├── index.html
+│               ├── app.js
+│               └── styles.css
 ├── config.yaml
 ├── main.py
 ├── run_api.py
@@ -110,9 +121,20 @@ The plugin supports:
 
 ## Configuration
 
-Edit `config.yaml`.
+Edit `config.yaml` directly or use the web UI Config tab.
 
-Important fields:
+### Environment Variables
+
+Set per-process environment variables (e.g. `PYTORCH_ALLOC_CONF`) under the `env` key:
+
+```yaml
+env:
+  PYTORCH_ALLOC_CONF: expandable_segments:True
+```
+
+These are injected into the LoRA training subprocess environment.
+
+Important config fields:
 
 - `input_folder`: root folder to scan recursively.
 - `output_folder`: metadata/export destination.
@@ -172,7 +194,9 @@ Start service:
 python3 run_api.py --config ./config.yaml --port 8025
 ```
 
-Example endpoints:
+The API serves the web UI at `http://localhost:8025/ui/`.
+
+### Standard endpoints
 
 - `GET /health`
 - `POST /scan`
@@ -189,6 +213,23 @@ Example endpoints:
 - `GET /jobs/train/active`
 - `GET /jobs/{job_id}`
 - `POST /jobs/train/pause`
+
+### Config management endpoints
+
+- `GET /configs` — list available config files
+- `GET /config` — get current config as JSON
+- `POST /config/switch` — switch active config file
+- `PUT /config` — update config values (including `env`)
+
+## Web UI
+
+The web UI provides three tabs:
+
+- **Studio** — scan, recluster, identities search, image browser
+- **Characters** — identity management, LoRA export & training
+- **Config** — config file selection, field editing, environment variables
+
+Access it at `http://localhost:8025/ui/` when the API server is running. When installed as a WebbDuck plugin, the same UI appears in the DNADuck tab.
 
 ## Notes
 
@@ -208,5 +249,6 @@ Example endpoints:
 - Use `POST /train/lora` with `{"wait_for_result": true}` for synchronous/blocking behavior.
 - Training progress now reports live step counters and ETA in `/activity` when available.
 - Pause/resume: call `POST /jobs/train/pause`, then start training again to auto-resume from latest saved state.
+- Config `env` variables are injected into the training subprocess via `subprocess.Popen(env=...)`.
 
 See `TESTING.md` for exact validation steps.

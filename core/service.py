@@ -276,6 +276,20 @@ def trigger_lora_training(
 ) -> dict:
     config = load_runtime_config(config_path=config_path, overrides=overrides)
     dataset_dir = Path(config["output_folder"]).resolve() / "lora_export"
+
+    # Build extra environment from config
+    raw_env = config.get("env", {})
+    env_overrides: dict[str, str] | None = None
+    if isinstance(raw_env, dict):
+        env_overrides = {}
+        for k, v in raw_env.items():
+            key = str(k).strip()
+            val = str(v).strip() if v is not None else ""
+            if key and val:
+                env_overrides[key] = val
+        if not env_overrides:
+            env_overrides = None
+
     command_template = str(config.get("lora_train_command", "")).strip()
     trainer = str(config.get("lora_trainer", "kohya_ss")).strip().lower()
 
@@ -284,6 +298,7 @@ def trigger_lora_training(
         return _run_command(
             command,
             dataset_dir=dataset_dir,
+            env_overrides=env_overrides,
             progress_callback=progress_callback,
             stop_callback=stop_callback,
         )
@@ -295,6 +310,7 @@ def trigger_lora_training(
             dataset_dir=dataset_dir,
             output_dir=output_dir,
             output_name_prefix=output_name,
+            env_overrides=env_overrides,
             progress_callback=progress_callback,
             stop_callback=stop_callback,
         )
@@ -503,6 +519,7 @@ def _run_command(
     *,
     output_dir: Path | None = None,
     output_name_prefix: str | None = None,
+    env_overrides: dict[str, str] | None = None,
     progress_callback=None,
     stop_callback=None,
 ) -> dict:
@@ -520,8 +537,13 @@ def _run_command(
     )
     tracker.emit({"stage": "training_starting", "message": "Launching trainer..."})
 
+    env = dict(os.environ)
+    if env_overrides:
+        env.update(env_overrides)
+
     popen_kwargs: dict = {
         "args": command,
+        "env": env,
         "stdout": subprocess.PIPE,
         "stderr": subprocess.PIPE,
         "text": True,

@@ -15,6 +15,8 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
+import yaml
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
@@ -101,6 +103,14 @@ class ConnectionRequest(BaseModel):
 class ImageActionRequest(BaseModel):
     image_path: str
     action: str = Field(..., description="remove | blacklist | restore")
+
+
+class SwitchConfigRequest(BaseModel):
+    config: str
+
+
+class UpdateConfigRequest(BaseModel):
+    updates: dict
 
 
 def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
@@ -667,6 +677,80 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                 _ACTIVITY["message"] = str(data.get("message") or "Pause requested.")
                 _ACTIVITY["updated_at"] = now
         return {"result": data}
+
+    # ── Config endpoints ─────────────────────────────────────────────
+
+    @router.get("/configs")
+    def list_configs() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "GET", "/configs", timeout_s=REMOTE_TIMEOUT_ACTIVITY_S)
+        root = _resolve_dnaduck_root()
+        cfg = _resolve_dnaduck_config(root)
+        parent = cfg.parent.resolve()
+        files = sorted(parent.glob("*.yaml")) + sorted(parent.glob("*.yml"))
+        return {
+            "configs": [_safe_rel_path(f, parent) for f in files],
+            "current": _safe_rel_path(cfg, parent),
+            "current_path": str(cfg),
+            "root": str(parent),
+        }
+
+    def _safe_rel_path(path: Path, anchor: Path) -> str:
+        try:
+            return str(path.relative_to(anchor))
+        except ValueError:
+            return str(path)
+
+    @router.get("/config")
+    def get_config() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "GET", "/config", timeout_s=REMOTE_TIMEOUT_ACTIVITY_S)
+        root = _resolve_dnaduck_root()
+        cfg = _resolve_dnaduck_config(root)
+        try:
+            raw = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        except Exception:
+            raw = {}
+        return dict(raw)
+
+    @router.post("/config/switch")
+    def switch_config(payload: SwitchConfigRequest) -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if not target.api_base:
+            raise HTTPException(status_code=400, detail="Config switching requires API mode (managed_api or remote_api).")
+        return _remote_request(
+            target.api_base,
+            "POST",
+            "/config/switch",
+            {"config": payload.config},
+            timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+        )
+
+    @router.put("/config")
+    def update_config(payload: UpdateConfigRequest) -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "PUT",
+                "/config",
+                {"updates": payload.updates},
+                timeout_s=REMOTE_TIMEOUT_ACTIVITY_S,
+            )
+        root = _resolve_dnaduck_root()
+        cfg_path = _resolve_dnaduck_config(root)
+        current: dict = {}
+        try:
+            current = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        except Exception:
+            pass
+        for key, value in payload.updates.items():
+            current[key] = value
+        with cfg_path.open("w", encoding="utf-8") as f:
+            yaml.safe_dump(current, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+        return {"ok": True, "updated": list(payload.updates.keys())}
 
     return router
 

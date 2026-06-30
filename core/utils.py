@@ -84,6 +84,7 @@ def load_config(config_path: Path) -> dict:
         "kohya_auto_resume": True,
         "kohya_resume_state": "",
         "lora_train_command": "",
+        "env": {},
         "log_level": "INFO",
     }
     merged = {**defaults, **raw}

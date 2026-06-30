@@ -25,6 +25,7 @@
       <nav class="nova-tabs" aria-label="DNADuck views">
         <button class="nav-tab active" data-view="studio" type="button">Studio</button>
         <button class="nav-tab" data-view="identities" type="button">Characters</button>
+        <button class="nav-tab" id="cfg-tab-btn" data-view="config" type="button">Config</button>
       </nav>
 
       <div class="nova-topbar-right">
@@ -224,6 +225,96 @@
               <div id="identity-images-grid" class="identity-images-grid"></div>
               <p class="muted status-note" id="identity-detail-feedback">Select a character group to begin.</p>
             </aside>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-config">
+        <section class="nova-block">
+          <div class="nova-block-title">Configuration</div>
+          <div class="nova-block-body">
+            <p class="muted">Switch config files or edit settings. Changes are saved to the active config YAML.</p>
+
+            <div class="form-stack" style="max-width:800px">
+              <div class="config-header-row">
+                <div>
+                  <label class="form-label">Active Config</label>
+                  <strong id="cfg-current-config">config.yaml</strong>
+                </div>
+                <div>
+                  <label class="form-label" for="config-select">Switch Config</label>
+                  <select id="config-select" class="select">
+                    <option value="">Loading...</option>
+                  </select>
+                </div>
+              </div>
+
+              <fieldset class="config-fieldset">
+                <legend>Paths</legend>
+                <label class="form-label" for="cfg-input-folder">Input Folder</label>
+                <input class="input" id="cfg-input-folder" type="text" />
+                <label class="form-label" for="cfg-output-folder">Output Folder</label>
+                <input class="input" id="cfg-output-folder" type="text" />
+                <label class="form-label" for="cfg-database-path">Database Path</label>
+                <input class="input" id="cfg-database-path" type="text" />
+              </fieldset>
+
+              <fieldset class="config-fieldset">
+                <legend>Clustering</legend>
+                <label class="form-label" for="cfg-mode">Mode</label>
+                <select id="cfg-mode" class="select">
+                  <option value="realism">Realism</option>
+                  <option value="anime">Anime</option>
+                  <option value="hybrid">Hybrid</option>
+                </select>
+                <label class="form-label" for="cfg-eps-realism">Epsilon (Realism)</label>
+                <input class="input" id="cfg-eps-realism" type="text" />
+                <label class="form-label" for="cfg-min-samples">Min Samples</label>
+                <input class="input" id="cfg-min-samples" type="number" min="1" />
+              </fieldset>
+
+              <fieldset class="config-fieldset">
+                <legend>LoRA Export</legend>
+                <label class="form-label" for="cfg-lora-min-images">Min Images per Identity</label>
+                <input class="input" id="cfg-lora-min-images" type="number" min="1" />
+              </fieldset>
+
+              <fieldset class="config-fieldset">
+                <legend>Environment Variables</legend>
+                <p class="muted" style="margin-bottom:6px">Set KEY=VALUE pairs, one per line. Applied to training subprocesses.</p>
+                <textarea class="input textarea" id="cfg-env-vars" rows="4" placeholder="PYTORCH_ALLOC_CONF=expandable_segments:True&#10;CUDA_LAUNCH_BLOCKING=1"></textarea>
+              </fieldset>
+
+              <fieldset class="config-fieldset">
+                <legend>Training (kohya_ss)</legend>
+                <label class="form-label" for="cfg-base-model">Base Model Path</label>
+                <input class="input" id="cfg-base-model" type="text" />
+                <label class="form-label" for="cfg-output-name">LoRA Output Name</label>
+                <input class="input" id="cfg-output-name" type="text" />
+                <label class="form-label" for="cfg-train-steps">Training Steps</label>
+                <input class="input" id="cfg-train-steps" type="number" min="1" />
+                <label class="form-label" for="cfg-learning-rate">Learning Rate</label>
+                <input class="input" id="cfg-learning-rate" type="text" />
+                <div class="inline-fields">
+                  <div>
+                    <label class="form-label" for="cfg-network-dim">Network Dim</label>
+                    <input class="input" id="cfg-network-dim" type="number" min="1" />
+                  </div>
+                  <div>
+                    <label class="form-label" for="cfg-network-alpha">Network Alpha</label>
+                    <input class="input" id="cfg-network-alpha" type="number" min="1" />
+                  </div>
+                </div>
+                <label class="form-label" for="cfg-batch-size">Batch Size</label>
+                <input class="input" id="cfg-batch-size" type="number" min="1" />
+                <label class="form-label" for="cfg-num-repeats">Num Repeats</label>
+                <input class="input" id="cfg-num-repeats" type="number" min="1" />
+              </fieldset>
+
+              <div class="actions">
+                <button id="config-save-btn" class="btn btn-primary" type="button">Save Config</button>
+              </div>
+            </div>
           </div>
         </section>
       </section>

@@ -1,5 +1,8 @@
 (function () {
-  const API_BASE = window.location.pathname.replace(/\/ui\/.*$/, "/api");
+  const IS_PLUGIN = window.location.pathname.includes("/plugins/");
+  const API_BASE = IS_PLUGIN
+    ? window.location.pathname.replace(/\/ui\/.*$/, "/api")
+    : window.location.pathname.replace(/\/ui\/.*$/, "") || "/";
   const IDENTITY_PAGE_SIZE = 120;
   const ACTIVITY_POLL_MS_ACTIVE = 3000;
   const ACTIVITY_POLL_MS_IDLE = 15000;
@@ -177,6 +180,14 @@
   function post(path, body) {
     return request(path, {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    });
+  }
+
+  function put(path, body) {
+    return request(path, {
+      method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     });
@@ -573,6 +584,171 @@
     setConnectionInfo(health);
     addEvent("Connection checked.");
     return health;
+  }
+
+  // ── Config management ─────────────────────────────────────────────
+
+  let configsCache = [];
+  let configNamesCache = [];
+  let currentConfigName = "";
+  let currentConfig = {};
+
+  async function loadConfigList() {
+    try {
+      const data = await get("/configs");
+      configsCache = Array.isArray(data.configs) ? data.configs : [];
+      currentConfigName = String(data.current || "");
+      renderConfigSelector(currentConfigName);
+      return data;
+    } catch (error) {
+      return { configs: [], current: null };
+    }
+  }
+
+  async function loadCurrentConfig() {
+    try {
+      currentConfig = await get("/config");
+      renderConfigEditor(currentConfig);
+      return currentConfig;
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function renderConfigSelector(currentName) {
+    const select = byId("config-select");
+    if (!select) return;
+    select.innerHTML = "";
+    for (const name of configsCache) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      if (name === currentName) opt.selected = true;
+      select.appendChild(opt);
+    }
+    select.disabled = configsCache.length <= 1;
+    const label = byId("cfg-current-config");
+    if (label) label.textContent = currentName || "config.yaml";
+  }
+
+  function setField(id, value) {
+    const el = byId(id);
+    if (!el) return;
+    if (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA") {
+      el.value = String(value ?? "");
+    } else {
+      el.textContent = String(value ?? "");
+    }
+  }
+
+  function renderConfigEditor(config) {
+    if (!config || typeof config !== "object") return;
+    setField("cfg-input-folder", config.input_folder || "");
+    setField("cfg-output-folder", config.output_folder || "");
+    setField("cfg-database-path", config.database_path || "");
+    setField("cfg-mode", config.mode || "realism");
+    setField("cfg-eps-realism", config.eps_realism ?? "");
+    setField("cfg-min-samples", config.min_samples ?? "");
+    setField("cfg-lora-min-images", config.lora_min_images ?? "");
+    setField("cfg-train-steps", config.kohya_train_steps ?? "");
+    setField("cfg-learning-rate", config.kohya_learning_rate ?? "");
+    setField("cfg-network-dim", config.kohya_network_dim ?? "");
+    setField("cfg-network-alpha", config.kohya_network_alpha ?? "");
+    setField("cfg-batch-size", config.kohya_batch_size ?? "");
+    setField("cfg-num-repeats", config.kohya_num_repeats ?? "");
+    setField("cfg-base-model", config.kohya_base_model || "");
+    setField("cfg-output-name", config.kohya_output_name || "");
+    setField("cfg-current-config", currentConfigName || "config.yaml");
+    // Environment variables
+    const env = config.env && typeof config.env === "object" ? config.env : {};
+    const envLines = Object.entries(env)
+      .filter(([, v]) => v != null && String(v).trim() !== "")
+      .map(([k, v]) => `${k}=${v}`)
+      .join("\n");
+    const envEl = byId("cfg-env-vars");
+    if (envEl) envEl.value = envLines;
+  }
+
+  async function handleConfigSwitch() {
+    const select = byId("config-select");
+    if (!select || !select.value) return;
+    const name = select.value;
+    try {
+      await post("/config/switch", { config: name });
+      addEvent(`Switched config to ${name}`);
+      await loadCurrentConfig();
+      await loadConfigList();
+      await refreshAll();
+    } catch (error) {
+      addEvent(`Config switch: ${error.message}`);
+    }
+  }
+
+  async function handleConfigSave() {
+    const updates = {};
+    const fields = {
+      "cfg-input-folder": "input_folder",
+      "cfg-output-folder": "output_folder",
+      "cfg-database-path": "database_path",
+      "cfg-mode": "mode",
+      "cfg-eps-realism": "eps_realism",
+      "cfg-min-samples": "min_samples",
+      "cfg-lora-min-images": "lora_min_images",
+      "cfg-train-steps": "kohya_train_steps",
+      "cfg-learning-rate": "kohya_learning_rate",
+      "cfg-network-dim": "kohya_network_dim",
+      "cfg-network-alpha": "kohya_network_alpha",
+      "cfg-batch-size": "kohya_batch_size",
+      "cfg-num-repeats": "kohya_num_repeats",
+      "cfg-base-model": "kohya_base_model",
+      "cfg-output-name": "kohya_output_name",
+    };
+    for (const [id, key] of Object.entries(fields)) {
+      const el = byId(id);
+      if (!el) continue;
+      const val = el.value !== undefined ? el.value : el.textContent;
+      const trimmed = String(val || "").trim();
+      if (trimmed === "") continue;
+      if (key === "kohya_train_steps" || key === "min_samples" || key === "lora_min_images" || key === "kohya_network_dim" || key === "kohya_network_alpha" || key === "kohya_batch_size" || key === "kohya_num_repeats") {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) updates[key] = num;
+      } else if (key === "eps_realism") {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) updates[key] = num;
+      } else if (key === "kohya_learning_rate") {
+        const num = Number(trimmed);
+        if (Number.isFinite(num)) updates[key] = num;
+      } else {
+        updates[key] = trimmed;
+      }
+    }
+    // Environment variables from textarea
+    const envEl = byId("cfg-env-vars");
+    if (envEl) {
+      const envText = String(envEl.value || "").trim();
+      const envObj = {};
+      if (envText) {
+        for (const line of envText.split("\n")) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith("#")) continue;
+          const eqIdx = trimmed.indexOf("=");
+          if (eqIdx > 0) {
+            const k = trimmed.slice(0, eqIdx).trim();
+            const v = trimmed.slice(eqIdx + 1).trim();
+            if (k) envObj[k] = v;
+          }
+        }
+      }
+      updates.env = envObj;
+    }
+
+    try {
+      await put("/config", { updates });
+      addEvent("Config saved");
+      await loadCurrentConfig();
+    } catch (error) {
+      addEvent(`Config save failed: ${error.message}`);
+    }
   }
 
   function applyScanSummary(result, fromFreshScan) {
@@ -1398,11 +1574,34 @@
       updateSelectedExportSummary();
     });
 
+    // ── Config event handlers ────────────────────────────────────────
+
+    byId("config-select")?.addEventListener("change", () => {
+      void handleConfigSwitch();
+    });
+
+    byId("config-save-btn")?.addEventListener("click", async () => {
+      byId("config-save-btn").disabled = true;
+      try {
+        await handleConfigSave();
+      } catch (error) {
+        addEvent(`Config save failed: ${error.message}`);
+      } finally {
+        byId("config-save-btn").disabled = false;
+      }
+    });
+
+    byId("cfg-tab-btn")?.addEventListener("click", () => {
+      switchView("config");
+    });
+
     try {
       await pollActivityAndReschedule();
       renderIdentityDetail(null, false);
       updateIdentityDetailButtons();
       await loadHealth();
+      await loadConfigList();
+      await loadCurrentConfig();
       await loadPausedJobs();
       addEvent("DNADuck is ready.");
     } catch (error) {
