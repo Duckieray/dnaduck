@@ -99,6 +99,8 @@ class AutoGenerateRequest(BaseModel):
     identity_id: int = Field(..., ge=1)
     target_count: int = Field(default=50, ge=1, le=10000)
     max_attempts: int = Field(default=500, ge=1, le=100000)
+    assign_eps_realism: float | None = Field(default=None, ge=0.01, le=1.0)
+    assign_eps_anime: float | None = Field(default=None, ge=0.01, le=1.0)
 
 
 _ACTIVITY_LOCK = threading.Lock()
@@ -1122,6 +1124,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 identity_id=payload.identity_id,
                 target_count=payload.target_count,
                 max_attempts=payload.max_attempts,
+                assign_eps_realism=payload.assign_eps_realism,
+                assign_eps_anime=payload.assign_eps_anime,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Auto-generation failed: {exc}") from exc
@@ -1139,6 +1143,29 @@ def create_app(config_path: str | None = None) -> FastAPI:
             return get_auto_generate_status()
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Status check failed: {exc}") from exc
+
+    @app.get("/autogen/debug")
+    def autogen_debug() -> dict:
+        """Dump what autogen sees when it reads the config."""
+        try:
+            cfg = load_config(_ACTIVE_CONFIG_PATH.resolve())
+            ag = cfg.get("auto_generate", {})
+            return {
+                "config_path": str(_ACTIVE_CONFIG_PATH),
+                "auto_generate": {
+                    "webbduck_url": ag.get("webbduck_url"),
+                    "base_model": ag.get("base_model"),
+                    "basic_prompt": ag.get("basic_prompt"),
+                    "lora_name": ag.get("lora_name"),
+                    "lora_weight": ag.get("lora_weight"),
+                    "steps": ag.get("steps"),
+                    "cfg": ag.get("cfg"),
+                    "scheduler": ag.get("scheduler"),
+                    "negative_prompt": ag.get("negative_prompt"),
+                },
+            }
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     @app.get("/image")
     def image(path: str = Query(...)) -> FileResponse:
@@ -1195,7 +1222,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
         cfg_path = _ACTIVE_CONFIG_PATH.resolve()
         cfg = load_config(cfg_path)
         for key, value in payload.updates.items():
-            cfg[key] = value
+            if isinstance(value, dict) and isinstance(cfg.get(key), dict):
+                cfg[key].update(value)
+            else:
+                cfg[key] = value
         with cfg_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(cfg, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return {"ok": True, "updated": list(payload.updates.keys())}

@@ -114,6 +114,14 @@ class SwitchConfigRequest(BaseModel):
     config: str
 
 
+class AutogenRequest(BaseModel):
+    identity_id: int = Field(..., ge=1)
+    target_count: int = Field(default=50, ge=1, le=10000)
+    max_attempts: int = Field(default=500, ge=1, le=100000)
+    assign_eps_realism: float | None = Field(default=None, ge=0.01, le=1.0)
+    assign_eps_anime: float | None = Field(default=None, ge=0.01, le=1.0)
+
+
 class UpdateConfigRequest(BaseModel):
     updates: dict
 
@@ -813,41 +821,47 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
         except Exception:
             pass
         for key, value in payload.updates.items():
-            current[key] = value
+            if isinstance(value, dict) and isinstance(current.get(key), dict):
+                current[key].update(value)
+            else:
+                current[key] = value
         with cfg_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(current, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return {"ok": True, "updated": list(payload.updates.keys())}
 
     # ── Auto-generate endpoints ───────────────────────────────────────
 
-    class AutogenRequest(BaseModel):
-        identity_id: int = Field(..., ge=1)
-        target_count: int = Field(default=50, ge=1, le=10000)
-        max_attempts: int = Field(default=500, ge=1, le=100000)
-
     @router.post("/autogen/start")
     def autogen_start(payload: AutogenRequest) -> dict:
         target = _resolve_backend_target(start_managed=True)
+        body = {
+            "identity_id": int(payload.identity_id),
+            "target_count": int(payload.target_count),
+            "max_attempts": int(payload.max_attempts),
+        }
+        if payload.assign_eps_realism is not None:
+            body["assign_eps_realism"] = float(payload.assign_eps_realism)
+        if payload.assign_eps_anime is not None:
+            body["assign_eps_anime"] = float(payload.assign_eps_anime)
         if target.api_base:
             return _remote_request(
                 target.api_base,
                 "POST",
                 "/autogen/start",
-                {
-                    "identity_id": int(payload.identity_id),
-                    "target_count": int(payload.target_count),
-                    "max_attempts": int(payload.max_attempts),
-                },
+                body,
                 timeout_s=REMOTE_TIMEOUT_SCAN_S,
             )
-        stdout = _run_cli(
-            [
-                "autogen",
-                str(int(payload.identity_id)),
-                "--target-count", str(int(payload.target_count)),
-                "--max-attempts", str(int(payload.max_attempts)),
-            ]
-        )
+        cli_cmd = [
+            "autogen",
+            str(int(payload.identity_id)),
+            "--target-count", str(int(payload.target_count)),
+            "--max-attempts", str(int(payload.max_attempts)),
+        ]
+        if payload.assign_eps_realism is not None:
+            cli_cmd += ["--assign-eps-realism", str(payload.assign_eps_realism)]
+        if payload.assign_eps_anime is not None:
+            cli_cmd += ["--assign-eps-anime", str(payload.assign_eps_anime)]
+        stdout = _run_cli(cli_cmd)
         return _parse_json_output(stdout)
 
     @router.post("/autogen/cancel")

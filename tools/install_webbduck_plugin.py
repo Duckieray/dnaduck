@@ -16,10 +16,11 @@ from pathlib import Path
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
 def _source_plugin_dir() -> Path:
     return _repo_root() / "integrations" / "webbduck_plugin" / "webapps" / "dnaduck"
-
 
 def _resolve_plugins_root(args: argparse.Namespace) -> Path:
     if args.plugins_dir:
@@ -33,7 +34,6 @@ def _resolve_plugins_root(args: argparse.Namespace) -> Path:
         return Path(env_dir).expanduser().resolve()
 
     return (Path.home() / ".webbduck" / "plugins").resolve()
-
 
 def _find_webbduck_port() -> int | None:
     """Scan common ports to find a live WebbDuck server."""

@@ -86,7 +86,7 @@ def load_config(config_path: Path) -> dict:
         "lora_train_command": "",
         "auto_generate": {
             "enabled": False,
-            "webbduck_url": "http://localhost:8020",
+            "webbduck_url": "http://webbduck.theducklabs.com",
             "base_model": "",
             "scheduler": "UniPC",
             "steps": 30,
@@ -95,6 +95,9 @@ def load_config(config_path: Path) -> dict:
             "height": 1024,
             "second_pass_model": "None",
             "negative_prompt": "low quality, blurry, bad anatomy, disfigured, extra limbs, bad hands",
+            "basic_prompt": "",
+            "lora_name": "",
+            "lora_weight": "1.0",
             "target_count": 50,
             "max_attempts": 500,
             "assign_eps_realism": 0.27,
@@ -146,6 +149,15 @@ def load_config(config_path: Path) -> dict:
         "log_level": "INFO",
     }
     merged = {**defaults, **raw}
+    for key in ("auto_generate", "prompt_templates", "env"):
+        if key in raw and isinstance(raw[key], dict) and key in defaults and isinstance(defaults[key], dict):
+            merged[key] = {**defaults[key], **raw[key]}
+    if "auto_generate" in merged and isinstance(merged["auto_generate"], dict):
+        ag = merged["auto_generate"]
+        if "prompt_templates" in ag and isinstance(ag["prompt_templates"], dict):
+            default_pt = defaults.get("auto_generate", {}).get("prompt_templates", {})
+            if default_pt:
+                ag["prompt_templates"] = {**default_pt, **ag["prompt_templates"]}
 
     if str(merged["mode"]).lower() not in {"realism", "anime", "hybrid"}:
         raise ValueError("mode must be one of: realism, anime, hybrid")

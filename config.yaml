@@ -1,57 +1,32 @@
-# DNADuck Configuration
-
 input_folder: ./generated
 output_folder: ./dnaduck_output
 database_path: ./dnaduck.sqlite3
-
-mode: realism # realism | anime | hybrid
-
-# Clustering parameters
+mode: realism
 eps_realism: 0.31
 eps_anime: 0.47
-# Optional override for hybrid mode; if omitted, average(realism, anime) is used.
-# eps_hybrid: 0.68
 min_samples: 4
-
-# Existing-identity auto-assignment thresholds for incremental scans.
 assign_eps_realism: 0.27
 assign_eps_anime: 0.39
-# Optional override for hybrid mode; if omitted, average(assign realism, assign anime) is used.
-# assign_eps_hybrid: 0.625
-
-# Embedding options
 model_name: buffalo_l
 use_gpu: true
-det_size: [640, 640]
-# Skip files whose filename contains any of these (case-insensitive).
-exclude_name_contains: ["_upscaled", ".thumb"]
-
-# Output behavior
+det_size:
+- 640
+- 640
+exclude_name_contains:
+- _upscaled
+- .thumb
 overwrite_output: true
-identity_view_link_mode: none # none | symlink | hardlink | copy
-
-# LoRA export behavior
-lora_link_mode: hardlink # hardlink avoids image duplication when possible
+identity_view_link_mode: none
+lora_link_mode: hardlink
 lora_min_images: 5
-# Optional face-focused preprocessing for exported training images.
-# When enabled, DNADuck writes face-centered square JPG crops into lora_export.
 lora_face_crop_enabled: false
 lora_face_crop_size: 1024
 lora_face_crop_padding: 0.35
 lora_face_crop_model_name: buffalo_l
-# Keep false unless you specifically want GPU face-detection during export.
 lora_face_crop_use_gpu: false
-# Captioning for export is currently identity-token only.
-# Rich/descriptive captioning: Coming Soon.
-
-# LoRA trainer
-lora_trainer: kohya_ss # kohya_ss | custom_command
-
-# kohya_ss (sd-scripts) integration
-# Set this to your local kohya sd-scripts repo path.
+lora_trainer: kohya_ss
 kohya_sd_scripts_dir: ./trainer/sd-scripts
-# Set to your SDXL base model path/name.
-kohya_base_model: ""  # Required: set to your local SDXL base model path, e.g. /path/to/your_model.safetensors
+kohya_base_model: ''
 kohya_output_dir: ./dnaduck_output/trained_loras
 kohya_output_name: dnaduck_lora
 kohya_train_steps: 1000
@@ -59,37 +34,72 @@ kohya_learning_rate: 0.0001
 kohya_network_dim: 32
 kohya_network_alpha: 16
 kohya_batch_size: 1
-kohya_resolution: "1024,1024"
-# Bucket settings (keeps non-square images like 832x1216 in nearby buckets).
+kohya_resolution: 1024,1024
 kohya_enable_bucket: true
 kohya_bucket_no_upscale: false
 kohya_min_bucket_reso: 256
 kohya_max_bucket_reso: 1536
 kohya_num_repeats: 10
-# Optimizer:
-# - auto: prefer AdamW8bit when bitsandbytes is installed, else AdamW
-# - AdamW8bit: require bitsandbytes
-# - AdamW: no bitsandbytes dependency
 kohya_optimizer_type: AdamW
-# Attention backend:
-# - auto: prefer xformers when installed, else torch SDPA
-# - xformers: require xformers package
-# - sdpa: force torch scaled-dot-product attention
-# - none: no explicit attention backend flag
 kohya_attention_backend: sdpa
-# Data loading speed knobs (quality-neutral).
 kohya_max_data_loader_n_workers: 2
 kohya_persistent_data_loader_workers: true
-# Save/Resume support
 kohya_save_state: true
 kohya_save_state_every_n_steps: 250
 kohya_auto_resume: true
-# Optional: explicit state dir override (usually leave empty with auto_resume enabled).
-kohya_resume_state: ""
-
-# Optional custom command (overrides lora_trainer when set).
-# Available placeholders: {dataset_dir}
-lora_train_command: ""
-
-# Logging
+kohya_resume_state: ''
+lora_train_command: ''
+auto_generate:
+  enabled: false
+  webbduck_url: http://localhost:8010
+  base_model: ''
+  scheduler: UniPC
+  steps: 30
+  cfg: 7.5
+  width: 1024
+  height: 1024
+  second_pass_model: None
+  negative_prompt: low quality, blurry, bad anatomy, disfigured, extra limbs, bad
+    hands
+  target_count: 50
+  max_attempts: 500
+  assign_eps_realism: 0.27
+  assign_eps_anime: 0.39
+  prompt_templates:
+    shot:
+      ultra closeup: 20
+      portrait: 30
+      3/4 shot: 10
+      full body: 10
+      side profile: 30
+    pose:
+      facing camera: 40
+      facing to the side: 25
+      standing: 15
+      sitting: 20
+    hair:
+      hair up: 50
+      hair down: 50
+    setting:
+      in a coffee shop: 15
+      in a forest: 15
+      hiking on a trail: 10
+      in a park: 15
+      on a city street: 15
+      in a studio: 10
+      in a garden: 10
+      at the beach: 10
+    clothing:
+      casual clothes: 30
+      formal wear: 15
+      summer dress: 20
+      leather jacket: 20
+      uniform: 15
+    style:
+      ? ''
+      : 30
+      cinematic lighting: 25
+      soft natural lighting: 25
+      professional photography: 20
+env: {}
 log_level: INFO

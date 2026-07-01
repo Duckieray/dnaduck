@@ -11,6 +11,10 @@
   let activityPollInFlight = false;
   let activityTimer = null;
   let identitiesCache = [];
+
+  // Available LoRA / embedding names fetched from WebbDuck (populated by Fetch button)
+  let _autogenLoraOptions = [];
+  let _autogenEmbeddingOptions = [];
   let selectedIdentityId = null;
   let selectedIdentityOffset = 0;
   let selectedIdentityTotal = 0;
@@ -647,6 +651,112 @@
     }
   }
 
+  function _makeLoraRow(name, weight) {
+    const row = document.createElement("div");
+    row.className = "inline-fields";
+    row.style.cssText = "margin-bottom:4px;align-items:center";
+
+    const sel = document.createElement("select");
+    sel.className = "select";
+    sel.style.flex = "1";
+    sel.innerHTML = '<option value="">None</option>' +
+      _autogenLoraOptions.map(n =>
+        `<option value="${n}"${n === name ? " selected" : ""}>${n}</option>`
+      ).join("");
+    if (name && !_autogenLoraOptions.includes(name)) {
+      const extra = document.createElement("option");
+      extra.value = name; extra.textContent = name; extra.selected = true;
+      sel.insertBefore(extra, sel.firstChild.nextSibling);
+    }
+
+    const weightIn = document.createElement("input");
+    weightIn.className = "input";
+    weightIn.type = "text";
+    weightIn.placeholder = "1.0";
+    weightIn.value = weight ?? "1.0";
+    weightIn.style.width = "60px";
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-secondary";
+    btn.type = "button";
+    btn.textContent = "×";
+    btn.style.cssText = "padding:2px 8px;font-size:14px;line-height:1";
+    btn.addEventListener("click", () => row.remove());
+
+    row.appendChild(sel);
+    row.appendChild(weightIn);
+    row.appendChild(btn);
+    return row;
+  }
+
+  function _makeEmbeddingRow(name) {
+    const row = document.createElement("div");
+    row.className = "inline-fields";
+    row.style.cssText = "margin-bottom:4px;align-items:center";
+
+    const sel = document.createElement("select");
+    sel.className = "select";
+    sel.style.flex = "1";
+    sel.innerHTML = '<option value="">None</option>' +
+      _autogenEmbeddingOptions.map(n =>
+        `<option value="${n}"${n === name ? " selected" : ""}>${n}</option>`
+      ).join("");
+    if (name && !_autogenEmbeddingOptions.includes(name)) {
+      const extra = document.createElement("option");
+      extra.value = name; extra.textContent = name; extra.selected = true;
+      sel.insertBefore(extra, sel.firstChild.nextSibling);
+    }
+
+    const btn = document.createElement("button");
+    btn.className = "btn btn-secondary";
+    btn.type = "button";
+    btn.textContent = "×";
+    btn.style.cssText = "padding:2px 8px;font-size:14px;line-height:1";
+    btn.addEventListener("click", () => row.remove());
+
+    row.appendChild(sel);
+    row.appendChild(btn);
+    return row;
+  }
+
+  function renderAutogenLoras(loras) {
+    const list = byId("cfg-autogen-loras-list");
+    if (!list) return;
+    list.innerHTML = "";
+    for (const entry of (loras || [])) {
+      list.appendChild(_makeLoraRow(entry.name || "", entry.weight ?? 1.0));
+    }
+  }
+
+  function renderAutogenEmbeddings(embeddings) {
+    const list = byId("cfg-autogen-embeddings-list");
+    if (!list) return;
+    list.innerHTML = "";
+    for (const entry of (embeddings || [])) {
+      list.appendChild(_makeEmbeddingRow(entry.name || ""));
+    }
+  }
+
+  function _gatherAutogenLoras() {
+    const list = byId("cfg-autogen-loras-list");
+    if (!list) return [];
+    return [...list.children].flatMap(row => {
+      const name = row.querySelector("select")?.value?.trim();
+      if (!name) return [];
+      const w = parseFloat(row.querySelector("input")?.value);
+      return [{ name, weight: Number.isFinite(w) ? w : 1.0 }];
+    });
+  }
+
+  function _gatherAutogenEmbeddings() {
+    const list = byId("cfg-autogen-embeddings-list");
+    if (!list) return [];
+    return [...list.children].flatMap(row => {
+      const name = row.querySelector("select")?.value?.trim();
+      return name ? [{ name }] : [];
+    });
+  }
+
   function renderConfigEditor(config) {
     if (!config || typeof config !== "object") return;
     setField("cfg-input-folder", config.input_folder || "");
@@ -673,6 +783,105 @@
       .join("\n");
     const envEl = byId("cfg-env-vars");
     if (envEl) envEl.value = envLines;
+    // Auto-generation fields
+    const ag = config.auto_generate && typeof config.auto_generate === "object" ? config.auto_generate : {};
+    setField("cfg-autogen-url", ag.webbduck_url || "");
+    setField("cfg-autogen-steps", ag.steps ?? "");
+    setField("cfg-autogen-cfg", ag.cfg ?? "");
+    setField("cfg-autogen-negative", ag.negative_prompt || "");
+    setField("cfg-autogen-basic-prompt", ag.basic_prompt || "");
+    // LoRAs — new array format with backward-compat for legacy lora_name/lora_weight
+    const lorasToRender = Array.isArray(ag.loras) && ag.loras.length > 0
+      ? ag.loras
+      : (ag.lora_name ? [{ name: ag.lora_name, weight: parseFloat(ag.lora_weight) || 1.0 }] : []);
+    renderAutogenLoras(lorasToRender);
+    // Embeddings
+    renderAutogenEmbeddings(Array.isArray(ag.embeddings) ? ag.embeddings : []);
+    _populateAutogenSelect("cfg-autogen-model", ag.base_model || "");
+    _populateAutogenSelect("cfg-autogen-scheduler", ag.scheduler || "");
+  }
+
+  function _populateAutogenSelect(id, currentValue) {
+    const el = byId(id);
+    if (!el) return;
+    for (const opt of el.options) {
+      if (opt.value === currentValue) { opt.selected = true; return; }
+    }
+    if (currentValue) {
+      const opt = document.createElement("option");
+      opt.value = currentValue;
+      opt.textContent = currentValue;
+      opt.selected = true;
+      el.appendChild(opt);
+    }
+  }
+
+  function _gatherAutogenUpdates(updates) {
+    const ag = {};
+    const url = val("cfg-autogen-url");
+    if (url) ag.webbduck_url = url;
+    const model = val("cfg-autogen-model");
+    if (model) ag.base_model = model;
+    const scheduler = val("cfg-autogen-scheduler");
+    if (scheduler) ag.scheduler = scheduler;
+    const steps = num("cfg-autogen-steps");
+    if (steps !== undefined && Number.isFinite(steps)) ag.steps = Math.max(1, steps);
+    const cfg = num("cfg-autogen-cfg");
+    if (cfg !== undefined && Number.isFinite(cfg)) ag.cfg = cfg;
+    const neg = val("cfg-autogen-negative");
+    if (neg) ag.negative_prompt = neg;
+    ag.basic_prompt = val("cfg-autogen-basic-prompt") || "";
+    ag.loras = _gatherAutogenLoras();
+    ag.embeddings = _gatherAutogenEmbeddings();
+    if (Object.keys(ag).length > 0) {
+      updates.auto_generate = ag;
+    }
+  }
+
+  async function handleAutogenFetch() {
+    const url = String(byId("cfg-autogen-url")?.value || "").trim();
+    if (!url) return;
+    const btn = byId("cfg-autogen-fetch-btn");
+    if (btn) { btn.disabled = true; btn.textContent = "Fetching..."; }
+    try {
+      const [models, schedulers, loras, embeddings] = await Promise.all([
+        fetch(`${url}/models`).then(r => r.ok ? r.json() : []),
+        fetch(`${url}/schedulers`).then(r => r.ok ? r.json() : []),
+        fetch(`${url}/meta/assets/lora`).then(r => r.ok ? r.json() : []),
+        fetch(`${url}/meta/assets/embedding`).then(r => r.ok ? r.json() : []),
+      ]);
+      const toName = (v) => (typeof v === "object" && v !== null ? v.name ?? JSON.stringify(v) : String(v));
+
+      // Models
+      const modelEl = byId("cfg-autogen-model");
+      if (modelEl) {
+        const current = modelEl.value;
+        modelEl.innerHTML = '<option value="">Default</option>' +
+          (Array.isArray(models) ? models.map(m => `<option value="${toName(m)}">${toName(m)}</option>`).join("") : "");
+        if (current) modelEl.value = current;
+      }
+
+      // Schedulers
+      const schedEl = byId("cfg-autogen-scheduler");
+      if (schedEl) {
+        const current = schedEl.value;
+        schedEl.innerHTML = '<option value="">Default</option>' +
+          (Array.isArray(schedulers) ? schedulers.map(s => `<option value="${s}">${s}</option>`).join("") : "");
+        if (current) schedEl.value = current;
+      }
+
+      // Store available LoRA / embedding names globally, then re-render lists
+      _autogenLoraOptions = Array.isArray(loras) ? loras.map(toName) : [];
+      _autogenEmbeddingOptions = Array.isArray(embeddings) ? embeddings.map(toName) : [];
+      renderAutogenLoras(_gatherAutogenLoras());
+      renderAutogenEmbeddings(_gatherAutogenEmbeddings());
+
+      addEvent(`Fetched ${_autogenLoraOptions.length} LoRAs, ${_autogenEmbeddingOptions.length} embeddings.`);
+    } catch (error) {
+      addEvent(`Autogen fetch failed: ${error.message}`);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Fetch Models / Schedulers / LoRAs / Embeddings"; }
+    }
   }
 
   async function handleConfigSwitch() {
@@ -747,6 +956,8 @@
       }
       updates.env = envObj;
     }
+
+    _gatherAutogenUpdates(updates);
 
     try {
       await put("/config", { updates });
@@ -1574,6 +1785,12 @@
     if (promptText && status?.last_prompt) {
       promptText.textContent = `Last prompt: ${status.last_prompt}`;
     }
+    const debugOutput = byId("build-debug-output");
+    if (debugOutput && status?.runtime_config) {
+      debugOutput.textContent = JSON.stringify({ runtime_config: status.runtime_config }, null, 2);
+      const body = byId("build-debug-body");
+      if (body) body.style.display = "block";
+    }
   }
 
   async function startBuild() {
@@ -1582,15 +1799,19 @@
     if (!identityId || identityId < 1) return;
     const targetCount = parseInt(byId("build-target-count")?.value || "50", 10);
     const maxAttempts = parseInt(byId("build-max-attempts")?.value || "500", 10);
+    const epsSlider = byId("build-eps");
+    const assignEps = epsSlider ? parseFloat(epsSlider.value) : undefined;
     const prereqs = byId("build-prereqs");
     if (prereqs) prereqs.style.display = "none";
     setButtonBusy("build-start-btn", true, "Starting...");
     try {
-      const status = await post("/autogen/start", {
+      const body = {
         identity_id: identityId,
         target_count: Number.isFinite(targetCount) ? targetCount : 50,
         max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
-      });
+      };
+      if (Number.isFinite(assignEps)) body.assign_eps_realism = assignEps;
+      const status = await post("/autogen/start", body);
       if (status.error) {
         if (prereqs) { prereqs.textContent = status.error; prereqs.style.display = ""; }
         updateBuildUI({ running: false });
@@ -1999,6 +2220,22 @@
 
     byId("cfg-tab-btn")?.addEventListener("click", () => {
       switchView("config");
+      const url = String(byId("cfg-autogen-url")?.value || "").trim();
+      if (url) void handleAutogenFetch();
+    });
+
+    byId("cfg-autogen-fetch-btn")?.addEventListener("click", () => {
+      void handleAutogenFetch();
+    });
+
+    byId("cfg-autogen-add-lora")?.addEventListener("click", () => {
+      const list = byId("cfg-autogen-loras-list");
+      if (list) list.appendChild(_makeLoraRow("", 1.0));
+    });
+
+    byId("cfg-autogen-add-embedding")?.addEventListener("click", () => {
+      const list = byId("cfg-autogen-embeddings-list");
+      if (list) list.appendChild(_makeEmbeddingRow(""));
     });
 
     byId("review-refresh-btn")?.addEventListener("click", () => {
@@ -2032,6 +2269,12 @@
 
     byId("build-refresh-btn")?.addEventListener("click", () => {
       populateBuildCharacters();
+    });
+
+    byId("build-eps")?.addEventListener("input", () => {
+      const el = byId("build-eps-value");
+      const val = byId("build-eps")?.value;
+      if (el && val) el.textContent = val;
     });
 
     // Prompt Templates toggle + save

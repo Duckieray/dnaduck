@@ -279,6 +279,15 @@
                     <input class="input" id="build-max-attempts" type="number" min="1" value="500" />
                   </div>
                 </div>
+                <div class="build-input-row">
+                  <div style="flex:1">
+                    <label class="form-label" for="build-eps">Match Threshold (higher = looser)</label>
+                    <div style="display:flex;align-items:center;gap:8px">
+                      <input id="build-eps" type="range" min="0.05" max="0.60" step="0.01" value="0.27" style="flex:1" />
+                      <span id="build-eps-value" style="min-width:36px;text-align:right;font-size:14px">0.27</span>
+                    </div>
+                  </div>
+                </div>
                 <div class="actions build-actions">
                   <button id="build-start-btn" class="btn btn-primary" type="button">Generate</button>
                   <button id="build-cancel-btn" class="btn btn-secondary" type="button" style="display:none">Cancel</button>
@@ -390,6 +399,58 @@
                 <input class="input" id="cfg-batch-size" type="number" min="1" />
                 <label class="form-label" for="cfg-num-repeats">Num Repeats</label>
                 <input class="input" id="cfg-num-repeats" type="number" min="1" />
+              </fieldset>
+
+              <fieldset class="config-fieldset">
+                <legend>Auto-Generation (Build Dataset)</legend>
+
+                <label class="form-label" for="cfg-autogen-url">WebbDuck URL</label>
+                <input class="input" id="cfg-autogen-url" type="text" placeholder="http://localhost:8010" />
+
+                <div class="inline-fields">
+                  <div style="flex:1">
+                    <label class="form-label" for="cfg-autogen-model">Base Model</label>
+                    <select id="cfg-autogen-model" class="select"></select>
+                  </div>
+                  <div style="flex:1">
+                    <label class="form-label" for="cfg-autogen-scheduler">Scheduler</label>
+                    <select id="cfg-autogen-scheduler" class="select"></select>
+                  </div>
+                </div>
+
+                <div class="inline-fields">
+                  <div>
+                    <label class="form-label" for="cfg-autogen-steps">Steps</label>
+                    <input class="input" id="cfg-autogen-steps" type="number" min="1" />
+                  </div>
+                  <div>
+                    <label class="form-label" for="cfg-autogen-cfg">CFG Scale</label>
+                    <input class="input" id="cfg-autogen-cfg" type="text" />
+                  </div>
+                </div>
+
+                <label class="form-label" for="cfg-autogen-negative">Negative Prompt</label>
+                <textarea class="input textarea" id="cfg-autogen-negative" rows="3"></textarea>
+
+                <label class="form-label" for="cfg-autogen-basic-prompt">Basic Prompt</label>
+                <p class="muted" style="margin-bottom:6px">Prepended before the random templates. Use {trigger} as a placeholder for the character name.</p>
+                <textarea class="input textarea" id="cfg-autogen-basic-prompt" rows="3"></textarea>
+
+                <div style="margin-top:8px">
+                  <label class="form-label">LoRAs</label>
+                  <div id="cfg-autogen-loras-list"></div>
+                  <button id="cfg-autogen-add-lora" class="btn btn-secondary" type="button" style="margin-top:4px;font-size:12px;padding:2px 10px">+ Add LoRA</button>
+                </div>
+
+                <div style="margin-top:8px">
+                  <label class="form-label">Embeddings</label>
+                  <div id="cfg-autogen-embeddings-list"></div>
+                  <button id="cfg-autogen-add-embedding" class="btn btn-secondary" type="button" style="margin-top:4px;font-size:12px;padding:2px 10px">+ Add Embedding</button>
+                </div>
+
+                <div class="actions" style="margin-top:10px">
+                  <button id="cfg-autogen-fetch-btn" class="btn" type="button">Fetch Models / Schedulers / LoRAs / Embeddings</button>
+                </div>
               </fieldset>
 
               <div class="actions">

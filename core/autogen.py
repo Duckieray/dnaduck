@@ -104,14 +104,23 @@ def _load_prompt_templates(config: dict) -> dict[str, list[tuple[str, float]]]:
     }
 
 
-def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, float]]]) -> str:
+def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, float]]], basic_prompt: str = "") -> str:
     shot = _weighted_choice(templates["shot"])
     pose = _weighted_choice(templates["pose"])
     hair = _weighted_choice(templates["hair"])
     setting = _weighted_choice(templates["setting"])
     clothing = _weighted_choice(templates["clothing"])
     style = _weighted_choice(templates["style"])
-    parts = [f"{character_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
+    resolved_label = character_label
+    if basic_prompt:
+        basic = basic_prompt.replace("{trigger}", character_label)
+        parts = [f"{resolved_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
+        if style:
+            parts.append(style)
+        parts.append("detailed face, high quality")
+        random_part = ", ".join(parts)
+        return f"{basic}, {random_part}"
+    parts = [f"{resolved_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
     if style:
         parts.append(style)
     parts.append("detailed face, high quality")
@@ -129,9 +138,12 @@ def _generate_image_via_webbduck(
     height: int,
     scheduler: str,
     second_pass_model: str,
+    loras: list | None = None,
+    embeddings: list | None = None,
 ) -> str | None:
+    import json
     url = f"{webbduck_url.rstrip('/')}/test"
-    data = urllib.parse.urlencode({
+    params = {
         "prompt": prompt,
         "negative_prompt": negative_prompt or "",
         "base_model": base_model,
@@ -143,11 +155,17 @@ def _generate_image_via_webbduck(
         "second_pass_model": second_pass_model or "None",
         "second_pass_mode": "auto",
         "wait_for_result": "True",
-    }).encode()
+    }
+    if loras:
+        params["loras"] = json.dumps(loras)
+        log.info("Sending LoRAs to WebbDuck: %s", params["loras"])
+    if embeddings:
+        params["embeddings"] = json.dumps(embeddings)
+        log.info("Sending embeddings to WebbDuck: %s", params["embeddings"])
+    data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=600) as resp:
-            import json
             body = json.loads(resp.read().decode())
             if "images" in body and len(body["images"]) > 0:
                 return str(body["images"][0])
@@ -251,23 +269,17 @@ def _get_identity_label(config: dict, identity_id: int) -> str | None:
         conn.close()
 
 
-def run_auto_generate(
-    config_path: Path,
+def init_auto_generate_status(
     identity_id: int,
     target_count: int = 50,
     max_attempts: int = 500,
-    progress_callback=None,
-) -> dict:
+) -> None:
+    """Set initial status before the thread starts, so get_auto_generate_status()
+    never sees stale data from a previous run."""
     global _AUTOGEN_CANCEL, _AUTOGEN_STATUS
-
-    from .utils import load_config, resolve_runtime_paths
-
-    config = load_config(config_path.resolve())
-    config = resolve_runtime_paths(config, config_path.resolve())
-
     with _AUTOGEN_LOCK:
         if _AUTOGEN_CANCEL is not None:
-            return {"error": "Auto-generation is already running"}
+            return  # already running, don't clobber
         _AUTOGEN_CANCEL = threading.Event()
         _AUTOGEN_STATUS = {
             "running": True,
@@ -277,7 +289,31 @@ def run_auto_generate(
             "target_count": int(target_count),
             "max_attempts": int(max_attempts),
             "message": "Starting...",
+            "last_prompt": "",
+            "runtime_config": None,
         }
+
+
+def run_auto_generate(
+    config_path: Path,
+    identity_id: int,
+    target_count: int = 50,
+    max_attempts: int = 500,
+    progress_callback=None,
+    assign_eps_realism: float | None = None,
+    assign_eps_anime: float | None = None,
+) -> dict:
+    global _AUTOGEN_CANCEL, _AUTOGEN_STATUS
+
+    from .utils import load_config, resolve_runtime_paths
+
+    config = load_config(config_path.resolve())
+    config = resolve_runtime_paths(config, config_path.resolve())
+
+    # Status was already initialized by init_auto_generate_status() in the
+    # service layer — just verify the cancel flag is set.
+    if _AUTOGEN_CANCEL is None:
+        return {"error": "Auto-generation not initialized properly"}
 
     try:
         label = _get_identity_label(config, identity_id)
@@ -291,7 +327,7 @@ def run_auto_generate(
             return {"error": "Identity has no centroid. Run a scan first."}
 
         ag = config.get("auto_generate", {})
-        webbduck_url = str(ag.get("webbduck_url", "http://localhost:8020"))
+        webbduck_url = str(ag.get("webbduck_url", "http://webbduck.theducklabs.com"))
         base_model = str(ag.get("base_model", config.get("kohya_base_model", "")))
         if not base_model:
             _set_status(message="No base_model configured for auto-generation.", running=False)
@@ -305,9 +341,27 @@ def run_auto_generate(
         second_pass_model = str(ag.get("second_pass_model", "None"))
         negative_prompt = str(ag.get("negative_prompt",
             "low quality, blurry, bad anatomy, disfigured, extra limbs, bad hands"))
+        basic_prompt = str(ag.get("basic_prompt", ""))
+        # New format: loras = [{name, weight}, ...]
+        # Legacy compat: fall back to lora_name / lora_weight if loras list absent
+        loras_cfg: list[dict] = []
+        if ag.get("loras") and isinstance(ag["loras"], list):
+            loras_cfg = [e for e in ag["loras"] if isinstance(e, dict) and e.get("name")]
+        elif ag.get("lora_name"):
+            try:
+                loras_cfg = [{"name": str(ag["lora_name"]), "weight": float(ag.get("lora_weight", 1.0))}]
+            except (ValueError, TypeError):
+                loras_cfg = [{"name": str(ag["lora_name"]), "weight": 1.0}]
+        embeddings_cfg: list[dict] = []
+        if ag.get("embeddings") and isinstance(ag["embeddings"], list):
+            embeddings_cfg = [e for e in ag["embeddings"] if isinstance(e, dict) and e.get("name")]
         mode = str(config.get("mode", "realism"))
         eps_r = float(ag.get("assign_eps_realism", config.get("assign_eps_realism", 0.27)))
         eps_a = float(ag.get("assign_eps_anime", config.get("assign_eps_anime", 0.39)))
+        if assign_eps_realism is not None:
+            eps_r = float(assign_eps_realism)
+        if assign_eps_anime is not None:
+            eps_a = float(assign_eps_anime)
         if mode == "anime":
             assign_eps = eps_a
         elif mode == "hybrid":
@@ -321,6 +375,11 @@ def run_auto_generate(
         embedder = FaceEmbedder(config)
         templates = _load_prompt_templates(config)
 
+        log.info(
+            "Auto-generate config: basic_prompt=%r loras=%r embeddings=%r",
+            basic_prompt, loras_cfg, embeddings_cfg,
+        )
+
         matched = 0
         attempts = 0
 
@@ -330,13 +389,25 @@ def run_auto_generate(
                 break
 
             attempts += 1
-            prompt = _build_prompt(label, templates)
+            prompt = _build_prompt(label, templates, basic_prompt=basic_prompt)
             _set_status(
                 matched=matched, attempts=attempts,
                 message=f"Attempt {attempts}/{max_attempts}, generating...",
+                last_prompt=prompt,
+                runtime_config={
+                    "basic_prompt": basic_prompt,
+                    "loras": loras_cfg,
+                    "embeddings": embeddings_cfg,
+                },
             )
             if progress_callback:
                 progress_callback(matched, attempts, prompt)
+
+            log.info("Prompt [%d/%d]: %s", attempts, max_attempts, prompt)
+            if loras_cfg:
+                log.info("  LoRAs: %s", loras_cfg)
+            if embeddings_cfg:
+                log.info("  Embeddings: %s", embeddings_cfg)
 
             gen_path = _generate_image_via_webbduck(
                 prompt=prompt,
@@ -349,6 +420,8 @@ def run_auto_generate(
                 height=height,
                 scheduler=scheduler,
                 second_pass_model=second_pass_model,
+                loras=loras_cfg,
+                embeddings=embeddings_cfg,
             )
             if gen_path is None:
                 log.warning("Generation returned no image (attempt %d)", attempts)
@@ -405,11 +478,16 @@ def cancel_auto_generate() -> dict:
 def get_auto_generate_status() -> dict:
     with _AUTOGEN_LOCK:
         if not _AUTOGEN_STATUS.get("running"):
-            return {"running": False, "message": _AUTOGEN_STATUS.get("message", "Idle")}
+            return {
+                "running": False,
+                "message": _AUTOGEN_STATUS.get("message", "Idle"),
+                "last_prompt": _AUTOGEN_STATUS.get("last_prompt", ""),
+                "runtime_config": _AUTOGEN_STATUS.get("runtime_config"),
+            }
         return dict(_AUTOGEN_STATUS)
 
 
-def _set_status(matched=None, attempts=None, message=None, running=None):
+def _set_status(matched=None, attempts=None, message=None, running=None, last_prompt=None, runtime_config=None):
     with _AUTOGEN_LOCK:
         if matched is not None:
             _AUTOGEN_STATUS["matched"] = matched
@@ -419,3 +497,7 @@ def _set_status(matched=None, attempts=None, message=None, running=None):
             _AUTOGEN_STATUS["message"] = message
         if running is not None:
             _AUTOGEN_STATUS["running"] = running
+        if last_prompt is not None:
+            _AUTOGEN_STATUS["last_prompt"] = last_prompt
+        if runtime_config is not None:
+            _AUTOGEN_STATUS["runtime_config"] = runtime_config

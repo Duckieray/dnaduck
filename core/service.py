@@ -1272,9 +1272,19 @@ def auto_generate(
     identity_id: int,
     target_count: int = 50,
     max_attempts: int = 500,
+    assign_eps_realism: float | None = None,
+    assign_eps_anime: float | None = None,
 ) -> dict:
     """Start auto-generation in a background thread. Returns status immediately."""
-    from .autogen import run_auto_generate
+    from .autogen import init_auto_generate_status, run_auto_generate
+
+    # Initialize status BEFORE starting the thread so the first
+    # get_auto_generate_status() call sees running=True.
+    init_auto_generate_status(
+        identity_id=int(identity_id),
+        target_count=int(target_count),
+        max_attempts=int(max_attempts),
+    )
 
     thread = threading.Thread(
         target=run_auto_generate,
@@ -1283,6 +1293,8 @@ def auto_generate(
             "identity_id": int(identity_id),
             "target_count": int(target_count),
             "max_attempts": int(max_attempts),
+            "assign_eps_realism": assign_eps_realism,
+            "assign_eps_anime": assign_eps_anime,
         },
         daemon=True,
         name=f"dnaduck-autogen-{int(identity_id)}",
