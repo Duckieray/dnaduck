@@ -132,7 +132,34 @@ Expected:
 - `.txt` sidecars exist per image and contain identity token text only.
 - rich descriptive captioning is not enabled yet (Coming Soon).
 
-## 8) API Test
+## 8) Review Workflow Test
+
+### List and count unassigned images
+
+```bash
+python3 main.py list-unassigned --limit 10 --offset 0
+python3 main.py count-unassigned
+```
+
+### Reassign an image
+
+```bash
+python3 main.py reassign 42 /path/to/unassigned/image.png
+```
+
+### Re-cluster noise images
+
+```bash
+python3 main.py recluster-noise
+```
+
+### Re-analyze no_face images
+
+```bash
+python3 main.py reanalyze-no-face
+```
+
+## 9) API Test
 
 Start API:
 
@@ -148,9 +175,64 @@ curl -X POST http://127.0.0.1:8025/scan -H "Content-Type: application/json" -d '
 curl "http://127.0.0.1:8025/identities?min_members=1"
 curl -X POST http://127.0.0.1:8025/search -H "Content-Type: application/json" -d '{"image_path":"/absolute/path/to/query.jpg","top_k":5}'
 curl -X POST http://127.0.0.1:8025/export/lora -H "Content-Type: application/json" -d '{"min_images":5}'
+
+# Review API endpoints
+curl "http://127.0.0.1:8025/images/unassigned?limit=10&offset=0"
+curl "http://127.0.0.1:8025/images/unassigned/count"
+curl -X POST "http://127.0.0.1:8025/images/unassigned/recluster" -H "Content-Type: application/json" -d '{}'
+curl -X POST "http://127.0.0.1:8025/images/unassigned/reanalyze" -H "Content-Type: application/json" -d '{}'
+
+# Config management
+curl "http://127.0.0.1:8025/configs"
+curl "http://127.0.0.1:8025/config"
+curl -X PUT "http://127.0.0.1:8025/config" -H "Content-Type: application/json" -d '{"updates":{"lora_min_images":3}}'
 ```
 
-## 9) Optional Training Trigger Hook
+## 10) Auto-Generation Test (requires running WebbDuck)
+
+Prerequisites:
+- A running WebbDuck instance (`http://localhost:8020` by default)
+- `auto_generate.base_model` set to a valid SDXL checkpoint in `config.yaml`
+- An identity with a label and centroid (run scan + set a character name)
+
+Start via CLI:
+
+```bash
+python3 main.py autogen 42 --target-count 10 --max-attempts 100
+```
+
+Check status:
+
+```bash
+python3 main.py autogen-status
+```
+
+Cancel if needed:
+
+```bash
+python3 main.py autogen-cancel
+```
+
+Via API (with server running):
+
+```bash
+curl -X POST http://127.0.0.1:8025/autogen/start \
+  -H "Content-Type: application/json" \
+  -d '{"identity_id": 42, "target_count": 10, "max_attempts": 100}'
+curl http://127.0.0.1:8025/autogen/status
+curl -X POST http://127.0.0.1:8025/autogen/cancel -H "Content-Type: application/json" -d '{}'
+```
+
+Via Web UI:
+1. Open the DNADuck tab → **Build Dataset**
+2. The character dropdown is populated with all labeled identities
+3. Select a character, set Target Photos and Max Attempts
+4. Click **Generate** — the progress panel appears with real-time updates
+5. The progress bar shows matched/target; detail line shows attempt count
+6. Click **Cancel** to stop early
+7. Switched characters are loaded automatically when the tab is opened
+
+## 11) Optional Training Trigger Hook
 
 ### Default Trainer: kohya_ss (Chosen)
 
@@ -230,7 +312,7 @@ Background training behavior:
 - After pausing, start `/train/lora` again to auto-resume from the latest saved state folder.
 - For blocking mode, call `POST /train/lora` with `{"wait_for_result": true}`.
 
-## 10) WebbDuck Plugin Integration Test
+## 12) WebbDuck Plugin Integration Test
 
 1. Install DNADuck plugin from this repo:
 

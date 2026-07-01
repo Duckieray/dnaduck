@@ -105,6 +105,11 @@ class ImageActionRequest(BaseModel):
     action: str = Field(..., description="remove | blacklist | restore")
 
 
+class ReassignImageRequest(BaseModel):
+    image_path: str
+    identity_id: int = Field(..., ge=1)
+
+
 class SwitchConfigRequest(BaseModel):
     config: str
 
@@ -458,6 +463,67 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
             raise HTTPException(status_code=404, detail=f"Image not found: {image_path}")
         return FileResponse(str(image_path))
 
+    @router.post("/image/reassign")
+    def image_reassign(payload: ReassignImageRequest) -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "POST",
+                "/image/reassign",
+                {"image_path": payload.image_path, "identity_id": payload.identity_id},
+            )
+        stdout = _run_cli(
+            ["reassign", str(payload.identity_id), str(payload.image_path)]
+        )
+        return _parse_json_output(stdout)
+
+    @router.get("/images/unassigned")
+    def images_unassigned(
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "GET",
+                "/images/unassigned",
+                query={"limit": str(int(limit)), "offset": str(int(offset))},
+            )
+        stdout = _run_cli(
+            ["list-unassigned", "--limit", str(int(limit)), "--offset", str(int(offset))]
+        )
+        return _parse_json_output(stdout)
+
+    @router.get("/images/unassigned/count")
+    def images_unassigned_count() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "GET",
+                "/images/unassigned/count",
+            )
+        stdout = _run_cli(["count-unassigned"])
+        return _parse_json_output(stdout)
+
+    @router.post("/images/unassigned/recluster")
+    def images_unassigned_recluster() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "POST", "/images/unassigned/recluster", {})
+        stdout = _run_cli(["recluster-noise"])
+        return _parse_json_output(stdout)
+
+    @router.post("/images/unassigned/reanalyze")
+    def images_unassigned_reanalyze() -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if target.api_base:
+            return _remote_request(target.api_base, "POST", "/images/unassigned/reanalyze", {})
+        stdout = _run_cli(["reanalyze-no-face"])
+        return _parse_json_output(stdout)
+
     @router.post("/label")
     def label(payload: RelabelRequest) -> dict:
         target = _resolve_backend_target(start_managed=True)
@@ -751,6 +817,54 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
         with cfg_path.open("w", encoding="utf-8") as f:
             yaml.safe_dump(current, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         return {"ok": True, "updated": list(payload.updates.keys())}
+
+    # ── Auto-generate endpoints ───────────────────────────────────────
+
+    class AutogenRequest(BaseModel):
+        identity_id: int = Field(..., ge=1)
+        target_count: int = Field(default=50, ge=1, le=10000)
+        max_attempts: int = Field(default=500, ge=1, le=100000)
+
+    @router.post("/autogen/start")
+    def autogen_start(payload: AutogenRequest) -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "POST",
+                "/autogen/start",
+                {
+                    "identity_id": int(payload.identity_id),
+                    "target_count": int(payload.target_count),
+                    "max_attempts": int(payload.max_attempts),
+                },
+                timeout_s=REMOTE_TIMEOUT_SCAN_S,
+            )
+        stdout = _run_cli(
+            [
+                "autogen",
+                str(int(payload.identity_id)),
+                "--target-count", str(int(payload.target_count)),
+                "--max-attempts", str(int(payload.max_attempts)),
+            ]
+        )
+        return _parse_json_output(stdout)
+
+    @router.post("/autogen/cancel")
+    def autogen_cancel() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "POST", "/autogen/cancel", {})
+        stdout = _run_cli(["autogen-cancel"])
+        return _parse_json_output(stdout)
+
+    @router.get("/autogen/status")
+    def autogen_status() -> dict:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "GET", "/autogen/status")
+        stdout = _run_cli(["autogen-status"])
+        return _parse_json_output(stdout)
 
     return router
 

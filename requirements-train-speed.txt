@@ -1,4 +1,2 @@
-# Optional training acceleration packages.
-# Install these only if you plan to run kohya LoRA training from DNADuck.
-bitsandbytes
-xformers
+# Training speedups are now in the main requirements.txt
+# bitsandbytes and xformers are included there.

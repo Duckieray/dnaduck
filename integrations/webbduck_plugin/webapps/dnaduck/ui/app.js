@@ -24,6 +24,12 @@
     return document.getElementById(id);
   }
 
+  function escHtml(str) {
+    const div = document.createElement("div");
+    div.appendChild(document.createTextNode(String(str ?? "")));
+    return div.innerHTML;
+  }
+
   function setText(id, text) {
     const node = byId(id);
     if (!node) return;
@@ -751,6 +757,197 @@
     }
   }
 
+  // ── Review (needs-review workflow) ────────────────────────────────
+
+  async function loadReviewImages() {
+    const btn = byId("review-refresh-btn");
+    const loading = byId("review-loading-msg");
+    const errEl = byId("review-error");
+    if (loading) loading.style.display = "";
+    if (errEl) errEl.style.display = "none";
+    if (btn) btn.disabled = true;
+    try {
+      const data = await get("/images/unassigned?limit=200&offset=0");
+      renderReviewGrid(data, null);
+      void loadReviewCount();
+      return data;
+    } catch (error) {
+      const msg = `Could not load unassigned images: ${error.message}`;
+      addEvent(msg);
+      if (errEl) { errEl.textContent = msg; errEl.style.display = ""; }
+    } finally {
+      if (loading) loading.style.display = "none";
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function loadRecluster() {
+    const btn = byId("review-recluster-btn");
+    const loading = byId("review-loading-msg");
+    const errEl = byId("review-error");
+    if (loading) loading.style.display = "";
+    if (errEl) errEl.style.display = "none";
+    if (btn) btn.disabled = true;
+    try {
+      addEvent("Re-clustering noise images...");
+      const data = await post("/images/unassigned/recluster", {});
+      renderReviewGrid(data, "cluster");
+      void loadReviewCount();
+      addEvent(`Re-clustered noise into ${numberText((data.clusters || []).length)} groups.`);
+      return data;
+    } catch (error) {
+      const msg = `Re-cluster failed: ${error.message}`;
+      addEvent(msg);
+      if (errEl) { errEl.textContent = msg; errEl.style.display = ""; }
+    } finally {
+      if (loading) loading.style.display = "none";
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function loadReanalyze() {
+    const btn = byId("review-reanalyze-btn");
+    const loading = byId("review-loading-msg");
+    const errEl = byId("review-error");
+    if (loading) loading.style.display = "";
+    if (errEl) errEl.style.display = "none";
+    if (btn) btn.disabled = true;
+    try {
+      addEvent("Re-analyzing no_face images...");
+      const data = await post("/images/unassigned/reanalyze", {});
+      renderReviewGrid(data, null);
+      void loadReviewCount();
+      addEvent(`Re-analysis complete.`);
+      return data;
+    } catch (error) {
+      const msg = `Re-analysis failed: ${error.message}`;
+      addEvent(msg);
+      if (errEl) { errEl.textContent = msg; errEl.style.display = ""; }
+    } finally {
+      if (loading) loading.style.display = "none";
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  async function loadReviewCount() {
+    try {
+      const data = await get("/images/unassigned/count");
+      const total = Number(data.needs_review || 0);
+      const labelEl = byId("review-count-label");
+      if (labelEl) labelEl.textContent = `(${numberText(total)} images)`;
+      setStatValues({ review_count: total });
+      return data;
+    } catch {
+      // silent
+    }
+  }
+
+  async function renderReviewGrid(data, mode) {
+    const grid = byId("review-grid");
+    const empty = byId("review-empty");
+    if (!grid) return;
+
+    const images = Array.isArray(data.images) ? data.images : [];
+    const clusters = Array.isArray(data.clusters) ? data.clusters : null;
+
+    if (images.length === 0 && !clusters) {
+      grid.innerHTML = "";
+      if (empty) empty.style.display = "";
+      return;
+    }
+    if (empty) empty.style.display = "none";
+
+    const identityOpts = renderIdentityOptions();
+
+    let html = "";
+
+    if (clusters && mode === "cluster") {
+      for (let ci = 0; ci < clusters.length; ci++) {
+        const cluster = clusters[ci];
+        const members = Array.isArray(cluster.images) ? cluster.images : [];
+        html += `<div class="review-cluster-header">Group ${ci + 1} (${members.length} images)</div>`;
+        html += members.map((img) => renderReviewCard(img, identityOpts)).join("");
+      }
+      const unassignedImages = images.filter((img) => !img.cluster_id);
+      if (unassignedImages.length > 0) {
+        html += `<div class="review-cluster-header">Unclustered (${unassignedImages.length} images)</div>`;
+        html += unassignedImages.map((img) => renderReviewCard(img, identityOpts)).join("");
+      }
+    } else {
+      html = images.map((img) => renderReviewCard(img, identityOpts)).join("");
+    }
+
+    grid.innerHTML = html;
+    applyReviewCardSize();
+
+    grid.querySelectorAll(".review-assign-btn").forEach((btn) => {
+      btn.addEventListener("click", async (event) => {
+        const card = event.target.closest(".review-card");
+        if (!card) return;
+        const rawPath = decodeURIComponent(card.dataset.path || "");
+        const select = card.querySelector(".review-identity-select");
+        if (!select) return;
+        const identityId = Number(select.value || 0);
+        if (!identityId || identityId < 1) return;
+        btn.disabled = true;
+        btn.textContent = "Assigning...";
+        try {
+          await post("/image/reassign", { image_path: rawPath, identity_id: identityId });
+          card.remove();
+          const remaining = grid.querySelectorAll(".review-card").length;
+          if (remaining === 0) {
+            if (empty) empty.style.display = "";
+          }
+          void loadReviewCount();
+          addEvent("Assigned image to character.");
+        } catch (error) {
+          btn.disabled = false;
+          btn.textContent = "Assign";
+          addEvent(`Assignment failed: ${error.message}`);
+        }
+      });
+    });
+  }
+
+  function renderReviewCard(img, identityOpts) {
+    const sp = document.createElement("span");
+    sp.textContent = img.path || "";
+    const tooltip = sp.textContent;
+    const imgUrl = `${API_BASE}/image?path=${encodeURIComponent(img.path || "")}`;
+    const status = img.status || "unknown";
+    const cid = img.cluster_id != null ? ` data-cluster="${img.cluster_id}"` : "";
+    return `
+      <div class="review-card" data-path="${encodeURIComponent(img.path || "")}"${cid}>
+        <img src="${imgUrl}" alt="unassigned" loading="lazy" />
+        <div class="review-path" title="${tooltip}">${tooltip}</div>
+        <div class="review-status">${status}</div>
+        <div class="review-assign-row">
+          <select class="select review-identity-select">
+            ${identityOpts}
+          </select>
+          <button class="btn btn-primary review-assign-btn" type="button">Assign</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function applyReviewCardSize() {
+    const grid = byId("review-grid");
+    if (!grid) return;
+    const size = String(byId("review-size-slider")?.value || "180");
+    grid.style.setProperty("--review-card-size", size + "px");
+  }
+
+  function renderIdentityOptions() {
+    const rows = Array.isArray(identitiesCache) ? identitiesCache : [];
+    const opts = rows.map((row) => {
+      const id = Number(row.identity_id || 0);
+      const label = row.label || `character_${id}`;
+      return `<option value="${id}">${label} (${numberText(row.member_count || row.face_count || 0)} img)</option>`;
+    });
+    return '<option value="">-- Select character --</option>' + opts.join("");
+  }
+
   function applyScanSummary(result, fromFreshScan) {
     const data = scanPayloadFromResponse(result);
     const discovered = Number(data.discovered_count || 0);
@@ -1337,6 +1534,215 @@
     setText("last-action-text", "Workspace refreshed.");
   }
 
+  // ── Build Dataset (Auto-Generate) ─────────────────────────────────
+
+  let buildPollTimer = null;
+  let buildRunning = false;
+
+  function updateBuildUI(status) {
+    const startBtn = byId("build-start-btn");
+    const cancelBtn = byId("build-cancel-btn");
+    const progress = byId("build-progress");
+    const statusText = byId("build-status-text");
+    const detailText = byId("build-progress-detail");
+    const promptText = byId("build-last-prompt");
+    const bar = byId("build-progress-bar");
+    const running = Boolean(status?.running);
+    buildRunning = running;
+    if (startBtn) startBtn.style.display = running ? "none" : "";
+    if (cancelBtn) cancelBtn.style.display = running ? "" : "none";
+    if (startBtn) startBtn.disabled = false;
+    if (cancelBtn) cancelBtn.disabled = false;
+    if (progress) progress.style.display = status?.attempts != null || running ? "" : "none";
+    if (statusText) statusText.textContent = String(status?.message || "Idle");
+    if (bar) {
+      const matched = Number(status?.matched || 0);
+      const target = Number(status?.target_count || 1);
+      const pct = target > 0 ? Math.min(100, (matched / target) * 100) : 0;
+      bar.style.width = `${pct}%`;
+    }
+    if (detailText) {
+      const matched = Number(status?.matched || 0);
+      const attempts = Number(status?.attempts || 0);
+      const target = Number(status?.target_count || 0);
+      if (attempts > 0) {
+        detailText.textContent = `${matched} / ${target} matched (${numberText(attempts)} attempts)`;
+      } else {
+        detailText.textContent = "";
+      }
+    }
+    if (promptText && status?.last_prompt) {
+      promptText.textContent = `Last prompt: ${status.last_prompt}`;
+    }
+  }
+
+  async function startBuild() {
+    const select = byId("build-identity-select");
+    const identityId = parseInt(select?.value || "0", 10);
+    if (!identityId || identityId < 1) return;
+    const targetCount = parseInt(byId("build-target-count")?.value || "50", 10);
+    const maxAttempts = parseInt(byId("build-max-attempts")?.value || "500", 10);
+    const prereqs = byId("build-prereqs");
+    if (prereqs) prereqs.style.display = "none";
+    setButtonBusy("build-start-btn", true, "Starting...");
+    try {
+      const status = await post("/autogen/start", {
+        identity_id: identityId,
+        target_count: Number.isFinite(targetCount) ? targetCount : 50,
+        max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
+      });
+      if (status.error) {
+        if (prereqs) { prereqs.textContent = status.error; prereqs.style.display = ""; }
+        updateBuildUI({ running: false });
+        addEvent(`Build failed: ${status.error}`);
+        return;
+      }
+      updateBuildUI(status);
+      addEvent(`Building dataset for character #${identityId}...`);
+      void pollBuildStatus();
+    } catch (error) {
+      updateBuildUI({ running: false });
+      if (prereqs) { prereqs.textContent = error.message; prereqs.style.display = ""; }
+      addEvent(`Build start failed: ${error.message}`);
+    } finally {
+      setButtonBusy("build-start-btn", false, "Generate");
+    }
+  }
+
+  async function cancelBuild() {
+    setButtonBusy("build-cancel-btn", true, "Cancelling...");
+    try {
+      const status = await post("/autogen/cancel", {});
+      updateBuildUI(status);
+      addEvent("Build cancelled.");
+    } catch (error) {
+      addEvent(`Cancel failed: ${error.message}`);
+    } finally {
+      setButtonBusy("build-cancel-btn", false, "Cancel");
+    }
+  }
+
+  async function pollBuildStatus() {
+    if (buildPollTimer) {
+      clearTimeout(buildPollTimer);
+      buildPollTimer = null;
+    }
+    if (!buildRunning) return;
+    try {
+      const status = await get("/autogen/status");
+      updateBuildUI(status);
+      if (status?.running) {
+        buildPollTimer = setTimeout(pollBuildStatus, 3000);
+      } else {
+        buildRunning = false;
+        addEvent(`Build finished: ${status?.message || "done"}`);
+        void loadIdentities();
+      }
+    } catch (error) {
+      updateBuildUI({ running: false, message: "Status unavailable." });
+      buildRunning = false;
+    }
+  }
+
+  function populateBuildCharacters() {
+    const select = byId("build-identity-select");
+    if (!select) return;
+    const rows = Array.isArray(identitiesCache) ? identitiesCache : [];
+    const currentValue = select.value;
+    select.innerHTML = '<option value="">Select a character...</option>';
+    for (const row of rows) {
+      const id = Number(row.identity_id || 0);
+      if (id < 1) continue;
+      const label = row.label || `character_${id}`;
+      const opt = document.createElement("option");
+      opt.value = String(id);
+      opt.textContent = `${label} (${numberText(row.member_count || 0)} photos)`;
+      select.appendChild(opt);
+    }
+    if (currentValue) {
+      const exists = rows.some((r) => String(r.identity_id) === currentValue);
+      if (exists) select.value = currentValue;
+    }
+  }
+
+  const TEMPLATE_CATEGORIES = ["shot", "pose", "hair", "setting", "clothing", "style"];
+
+  function getPromptTemplates() {
+    return currentConfig?.auto_generate?.prompt_templates || {};
+  }
+
+  function renderBuildTemplates() {
+    const editor = byId("build-templates-editor");
+    if (!editor) return;
+    const templates = getPromptTemplates();
+    let html = "";
+    for (const cat of TEMPLATE_CATEGORIES) {
+      const items = templates[cat];
+      const entries = items && typeof items === "object"
+        ? Object.entries(items).filter(([k]) => k !== undefined)
+        : [];
+      html += `<fieldset class="build-template-fieldset" data-category="${cat}"><legend>${cat}</legend>`;
+      for (const [text, weight] of entries) {
+        const w = typeof weight === "number" ? weight : 0;
+        html += `<div class="build-template-row">
+          <input class="input build-template-text" type="text" value="${escHtml(text)}" placeholder="prompt text" />
+          <input class="input build-template-weight" type="number" min="0" value="${w}" />
+          <button class="btn-icon" title="Remove" data-action="remove">&times;</button>
+        </div>`;
+      }
+      html += `<button class="build-template-add-btn" data-action="add">+ Add</button></fieldset>`;
+    }
+    editor.innerHTML = html;
+
+    // Delegated events
+    editor.querySelectorAll("[data-action=remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        btn.closest(".build-template-row")?.remove();
+      });
+    });
+    editor.querySelectorAll(".build-template-add-btn").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const row = document.createElement("div");
+        row.className = "build-template-row";
+        row.innerHTML =
+          '<input class="input build-template-text" type="text" value="" placeholder="prompt text" />' +
+          '<input class="input build-template-weight" type="number" min="0" value="10" />' +
+          '<button class="btn-icon" title="Remove" data-action="remove">&times;</button>';
+        row.querySelector("[data-action=remove]").addEventListener("click", () => row.remove());
+        btn.parentNode.insertBefore(row, btn);
+      });
+    });
+  }
+
+  async function saveBuildTemplates() {
+    const editor = byId("build-templates-editor");
+    if (!editor) return;
+    const templates = {};
+    for (const cat of TEMPLATE_CATEGORIES) {
+      const fieldset = editor.querySelector(`fieldset[data-category="${cat}"]`);
+      if (!fieldset) continue;
+      const rows = fieldset.querySelectorAll(".build-template-row");
+      const catObj = {};
+      for (const row of rows) {
+        const textInput = row.querySelector(".build-template-text");
+        const weightInput = row.querySelector(".build-template-weight");
+        const text = (textInput?.value || "").trim();
+        const weight = parseInt(weightInput?.value || "0", 10);
+        if (text === "" && weight <= 0) continue;
+        catObj[text || ""] = weight > 0 ? weight : 0;
+      }
+      if (Object.keys(catObj).length > 0) templates[cat] = catObj;
+    }
+    try {
+      await put("/config", { updates: { auto_generate: { prompt_templates: templates } } });
+      addEvent("Prompt templates saved");
+      await loadCurrentConfig();
+      renderBuildTemplates();
+    } catch (error) {
+      addEvent(`Save templates failed: ${error.message}`);
+    }
+  }
+
   async function init() {
     renderEventFeed();
     setStatValues({
@@ -1595,14 +2001,96 @@
       switchView("config");
     });
 
+    byId("review-refresh-btn")?.addEventListener("click", () => {
+      void loadReviewImages();
+    });
+
+    byId("review-recluster-btn")?.addEventListener("click", () => {
+      void loadRecluster();
+    });
+
+    byId("review-reanalyze-btn")?.addEventListener("click", () => {
+      void loadReanalyze();
+    });
+
+    byId("review-size-slider")?.addEventListener("input", (event) => {
+      const val = String(event.target.value || "180");
+      const label = byId("review-size-label");
+      if (label) label.textContent = val + "px";
+      const grid = byId("review-grid");
+      if (grid) grid.style.setProperty("--review-card-size", val + "px");
+    });
+
+    // Build Dataset event handlers
+    byId("build-start-btn")?.addEventListener("click", () => {
+      void startBuild();
+    });
+
+    byId("build-cancel-btn")?.addEventListener("click", () => {
+      void cancelBuild();
+    });
+
+    byId("build-refresh-btn")?.addEventListener("click", () => {
+      populateBuildCharacters();
+    });
+
+    // Prompt Templates toggle + save
+    byId("build-templates-toggle")?.addEventListener("click", () => {
+      const body = byId("build-templates-body");
+      const btn = byId("build-templates-toggle");
+      const saveBtn = byId("build-templates-save-btn");
+      if (!body) return;
+      const showing = body.style.display !== "none";
+      body.style.display = showing ? "none" : "";
+      if (btn) btn.textContent = showing ? "Show" : "Hide";
+      if (saveBtn) saveBtn.style.display = showing ? "none" : "";
+      if (!showing) {
+        renderBuildTemplates();
+        setTimeout(() => {
+          const block = body.closest(".nova-block");
+          if (block) block.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 50);
+      }
+    });
+
+    byId("build-templates-save-btn")?.addEventListener("click", () => {
+      void saveBuildTemplates();
+    });
+
+    document.querySelectorAll(".nav-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        if (tab.dataset.view === "review") {
+          void loadReviewImages();
+        }
+        if (tab.dataset.view === "build") {
+          populateBuildCharacters();
+          renderBuildTemplates();
+        }
+      });
+    });
+
     try {
       await pollActivityAndReschedule();
       renderIdentityDetail(null, false);
       updateIdentityDetailButtons();
       await loadHealth();
+      await loadIdentities();
+      populateBuildCharacters();
       await loadConfigList();
       await loadCurrentConfig();
       await loadPausedJobs();
+      await loadReviewCount();
+      // Check if auto-generation was left running and resume polling
+      try {
+        const buildStatus = await get("/autogen/status");
+        if (buildStatus?.running) {
+          buildRunning = true;
+          updateBuildUI(buildStatus);
+          void pollBuildStatus();
+        }
+      } catch (_ignored) {
+        // autogen endpoint may not exist in older versions; ignore
+      }
       addEvent("DNADuck is ready.");
     } catch (error) {
       setText("last-action-text", `Startup issue: ${error.message}`);

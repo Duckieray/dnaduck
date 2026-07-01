@@ -477,6 +477,7 @@ def build_command(
         "--mixed_precision",
         "bf16",
         "--cache_latents",
+        "--gradient_checkpointing",
         "--max_data_loader_n_workers",
         str(max(0, int(max_data_loader_workers))),
         "--caption_extension",

@@ -16,11 +16,19 @@ from pydantic import BaseModel, Field
 
 from core.service import (
     apply_image_action,
+    auto_generate,
+    cancel_auto_generate,
+    count_unassigned,
     export_lora,
+    fetch_unassigned_images,
+    get_auto_generate_status,
     get_identities,
     get_identity_detail,
     is_active_training_running,
     merge_identity_groups,
+    reanalyze_no_face,
+    reassign_image,
+    recluster_noise,
     relabel_identity,
     request_active_training_stop,
     scan_images,
@@ -74,12 +82,23 @@ class ImageActionRequest(BaseModel):
     action: str = Field(..., description="remove | blacklist | restore")
 
 
+class ReassignImageRequest(BaseModel):
+    image_path: str
+    identity_id: int = Field(..., ge=1)
+
+
 class SwitchConfigRequest(BaseModel):
     config: str = Field(..., description="Config filename relative to config directory")
 
 
 class UpdateConfigRequest(BaseModel):
     updates: dict = Field(..., description="Key-value pairs to update in the config YAML")
+
+
+class AutoGenerateRequest(BaseModel):
+    identity_id: int = Field(..., ge=1)
+    target_count: int = Field(default=50, ge=1, le=10000)
+    max_attempts: int = Field(default=500, ge=1, le=100000)
 
 
 _ACTIVITY_LOCK = threading.Lock()
@@ -1040,6 +1059,86 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Image action failed: {exc}") from exc
+
+    @app.post("/image/reassign")
+    def image_reassign(payload: ReassignImageRequest) -> dict:
+        image_path = _normalize_optional_path(payload.image_path)
+        if not image_path:
+            raise HTTPException(status_code=400, detail="image_path is required")
+        try:
+            return reassign_image(
+                config_path=_ACTIVE_CONFIG_PATH,
+                image_path=Path(image_path),
+                identity_id=payload.identity_id,
+            )
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Image reassign failed: {exc}") from exc
+
+    @app.get("/images/unassigned")
+    def images_unassigned(
+        limit: int = Query(default=200, ge=1, le=1000),
+        offset: int = Query(default=0, ge=0),
+    ) -> dict:
+        try:
+            return fetch_unassigned_images(
+                config_path=_ACTIVE_CONFIG_PATH,
+                statuses=("noise", "no_face"),
+                limit=limit,
+                offset=offset,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to list unassigned images: {exc}") from exc
+
+    @app.get("/images/unassigned/count")
+    def images_unassigned_count() -> dict:
+        try:
+            return count_unassigned(config_path=_ACTIVE_CONFIG_PATH)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to count unassigned images: {exc}") from exc
+
+    @app.post("/images/unassigned/recluster")
+    def images_unassigned_recluster() -> dict:
+        try:
+            return recluster_noise(config_path=_ACTIVE_CONFIG_PATH)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Re-cluster failed: {exc}") from exc
+
+    @app.post("/images/unassigned/reanalyze")
+    def images_unassigned_reanalyze() -> dict:
+        try:
+            return reanalyze_no_face(config_path=_ACTIVE_CONFIG_PATH)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Re-analysis failed: {exc}") from exc
+
+    @app.post("/autogen/start")
+    def autogen_start(payload: AutoGenerateRequest) -> dict:
+        try:
+            return auto_generate(
+                config_path=_ACTIVE_CONFIG_PATH,
+                identity_id=payload.identity_id,
+                target_count=payload.target_count,
+                max_attempts=payload.max_attempts,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Auto-generation failed: {exc}") from exc
+
+    @app.post("/autogen/cancel")
+    def autogen_cancel() -> dict:
+        try:
+            return cancel_auto_generate()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Cancel failed: {exc}") from exc
+
+    @app.get("/autogen/status")
+    def autogen_status() -> dict:
+        try:
+            return get_auto_generate_status()
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Status check failed: {exc}") from exc
 
     @app.get("/image")
     def image(path: str = Query(...)) -> FileResponse:

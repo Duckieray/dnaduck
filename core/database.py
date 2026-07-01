@@ -468,6 +468,51 @@ def merge_identities(conn: sqlite3.Connection, target_id: int, source_ids: list[
     rebuild_identity_stats(conn)
 
 
+def list_unassigned_images(
+    conn: sqlite3.Connection,
+    *,
+    statuses: tuple[str, ...] | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> list[sqlite3.Row]:
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        return conn.execute(
+            f"""
+            SELECT id, path, sha256, status, identity_id, size_bytes, mtime, created_at, updated_at, last_seen_at
+            FROM images
+            WHERE identity_id IS NULL AND status IN ({placeholders})
+            ORDER BY path ASC
+            LIMIT ? OFFSET ?
+            """,
+            (*statuses, int(limit), int(offset)),
+        ).fetchall()
+    return conn.execute(
+        """
+        SELECT id, path, sha256, status, identity_id, size_bytes, mtime, created_at, updated_at, last_seen_at
+        FROM images
+        WHERE identity_id IS NULL
+        ORDER BY path ASC
+        LIMIT ? OFFSET ?
+        """,
+        (int(limit), int(offset)),
+    ).fetchall()
+
+
+def count_unassigned_images(conn: sqlite3.Connection, *, statuses: tuple[str, ...] | None = None) -> int:
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM images WHERE identity_id IS NULL AND status IN ({placeholders})",
+            statuses,
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM images WHERE identity_id IS NULL"
+        ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def fetch_image_with_embedding(conn: sqlite3.Connection, path: Path) -> sqlite3.Row | None:
     return conn.execute(
         """
@@ -477,3 +522,45 @@ def fetch_image_with_embedding(conn: sqlite3.Connection, path: Path) -> sqlite3.
         """,
         (str(path),),
     ).fetchone()
+
+
+def list_noise_with_embeddings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, path, status, identity_id, embedding, embedding_dim
+        FROM images
+        WHERE status = 'noise' AND embedding IS NOT NULL
+        ORDER BY path ASC
+        """
+    ).fetchall()
+
+
+def list_no_face_images(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT id, path, status, identity_id, sha256, size_bytes, mtime
+        FROM images
+        WHERE status = 'no_face'
+        ORDER BY path ASC
+        """
+    ).fetchall()
+
+
+def update_image_embedding(
+    conn: sqlite3.Connection,
+    *,
+    path: Path,
+    status: str,
+    identity_id: int | None,
+    embedding: bytes | None,
+    embedding_dim: int | None,
+) -> bool:
+    cur = conn.execute(
+        """
+        UPDATE images
+        SET status = ?, identity_id = ?, embedding = ?, embedding_dim = ?, updated_at = datetime('now')
+        WHERE path = ?
+        """,
+        (status, identity_id, embedding, embedding_dim, str(path)),
+    )
+    return cur.rowcount > 0

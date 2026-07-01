@@ -1,11 +1,10 @@
+# DNADuck additional dependencies.
+# Install on top of webbduck's requirements.txt — shared packages are already
+# pinned to identical versions in webbduck, so pip leaves them alone.
 insightface
 onnxruntime-gpu
 scikit-learn
-opencv-python
-PyYAML
-numpy
-fastapi
-uvicorn
-pydantic
-accelerate
 toml
+bitsandbytes
+xformers
+imagesize

@@ -13,6 +13,9 @@ DNADuck includes a full-featured **web UI** accessible both as a WebbDuck plugin
 - Phase B: Persistent SQLite identity database with incremental re-scan behavior.
 - Phase C: REST API for scan, identity management, and search.
 - Phase D: LoRA-oriented dataset export with hardlink/symlink/copy modes plus identity management operations.
+- Phase E: Needs Review workflow — unassigned (noise + no_face) image browser with reassign, re-cluster, and re-analyze tools.
+- Phase F: Config management — switch/edit config files at runtime via the web UI without server restart.
+- Phase G: Auto-Generate — generate synthetic training images via WebbDuck API, matched against identity embeddings, to grow your character datasets.
 
 ## Project Layout
 
@@ -22,6 +25,7 @@ dnaduck/
 │   ├── README.md
 │   └── sd-scripts/              # place kohya-ss sd-scripts here
 ├── core/
+│   ├── autogen.py               # auto-generation loop (generate → embed → match → keep/discard)
 │   ├── cluster.py
 │   ├── database.py
 │   ├── embedder.py
@@ -72,27 +76,34 @@ For LoRA export:
 
 ## Installation
 
+DNADuck dependencies are designed to install on top of WebbDuck's environment.
+
+### Option 1: Standalone env
+
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+conda create -n dnaduck python=3.10 -y
+conda activate dnaduck
 pip install -r requirements.txt
 ```
 
 Windows PowerShell:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+conda create -n dnaduck python=3.10 -y
+conda activate dnaduck
 pip install -r requirements.txt
 ```
 
 If you run CPU-only, replace `onnxruntime-gpu` with `onnxruntime`.
 
-Optional LoRA trainer speedups:
+### Option 2: Install into WebbDuck's env (single env)
 
 ```bash
-pip install -r requirements-train-speed.txt
+conda activate webbduck
+pip install -r requirements.txt
 ```
+
+This avoids needing `DNADUCK_PYTHON` — the WebbDuck plugin can use `sys.executable` directly since all deps are in one place.
 
 ## Optional WebbDuck Plugin Install
 
@@ -134,7 +145,7 @@ env:
 
 These are injected into the LoRA training subprocess environment.
 
-Important config fields:
+### Core config fields
 
 - `input_folder`: root folder to scan recursively.
 - `output_folder`: metadata/export destination.
@@ -144,6 +155,9 @@ Important config fields:
 - `assign_eps_*`: assignment thresholds against existing identities (stricter defaults are set to reduce catch-all identities).
 - `exclude_name_contains`: filename substrings to skip during scan (default: `_upscaled`, `.thumb`).
 - `identity_view_link_mode`: `none` | `symlink` | `hardlink` | `copy`.
+
+### Training config
+
 - `lora_link_mode`: `hardlink` by default.
 - `lora_trainer`: default `kohya_ss`.
 - `kohya_sd_scripts_dir`: set to `./trainer/sd-scripts` (recommended).
@@ -154,8 +168,70 @@ Important config fields:
 - `kohya_save_state_every_n_steps`: defaults to `250` to reduce save overhead while keeping resume support.
 - `lora_train_command`: optional command template with `{dataset_dir}` placeholder (overrides built-in trainer).
 
-For kohya training in the same Python environment as DNADuck, ensure `toml` and `accelerate` are installed.
-For faster training on supported systems, also install `bitsandbytes` and `xformers`.
+### Auto-Generate config
+
+Under the `auto_generate` key:
+
+```yaml
+auto_generate:
+  enabled: false
+  webbduck_url: http://localhost:8020
+  base_model: ""                          # SDXL checkpoint path (required)
+  scheduler: UniPC
+  steps: 30
+  cfg: 7.5
+  width: 1024
+  height: 1024
+  second_pass_model: None
+  negative_prompt: "low quality, blurry, bad anatomy, disfigured, extra limbs, bad hands"
+  target_count: 50                        # images to collect before stopping
+  max_attempts: 500                       # generation tries before giving up
+  assign_eps_realism: 0.27                # match threshold for realism mode
+  assign_eps_anime: 0.39                  # match threshold for anime mode
+  prompt_templates:
+    shot:                                 # weighted random — values are relative weights
+      ultra closeup: 20
+      portrait: 30
+      "3/4 shot": 10
+      full body: 10
+      side profile: 30
+    pose:
+      facing camera: 40
+      facing to the side: 25
+      standing: 15
+      sitting: 20
+    hair:
+      hair up: 50
+      hair down: 50
+    setting:
+      in a coffee shop: 15
+      in a forest: 15
+      hiking on a trail: 10
+      in a park: 15
+      on a city street: 15
+      in a studio: 10
+      in a garden: 10
+      at the beach: 10
+    clothing:
+      casual clothes: 30
+      formal wear: 15
+      summer dress: 20
+      leather jacket: 20
+      uniform: 15
+    style:
+      "": 30                              # empty string = no style modifier
+      cinematic lighting: 25
+      soft natural lighting: 25
+      professional photography: 20
+```
+
+Each prompt template category supports three formats:
+- `list[str]` — uniform random (backward compatible)
+- `dict[str, number]` — weighted random (recommended; values normalised to probabilities)
+- `list[dict]` with `text` and `weight` keys
+
+The generated prompt is built as:
+`"{label}, {shot}, {clothing}, {hair}, {pose}, {setting}, {style}, detailed face, high quality"`
 
 ### Trainer Folder Setup (Recommended)
 
@@ -184,6 +260,14 @@ python3 main.py merge 12 15 18
 python3 main.py export-lora --min-images 8
 python3 main.py train-lora
 python3 main.py images
+python3 main.py list-unassigned
+python3 main.py count-unassigned
+python3 main.py reassign 42 /path/to/image.png
+python3 main.py recluster-noise
+python3 main.py reanalyze-no-face
+python3 main.py autogen 42 --target-count 50 --max-attempts 500
+python3 main.py autogen-cancel
+python3 main.py autogen-status
 ```
 
 ## API
@@ -196,18 +280,28 @@ python3 run_api.py --config ./config.yaml --port 8025
 
 The API serves the web UI at `http://localhost:8025/ui/`.
 
-### Standard endpoints
+### Scan & Identity endpoints
 
 - `GET /health`
 - `POST /scan`
 - `POST /scan/recluster`
 - `GET /identities?min_members=1`
 - `GET /identity/{identity_id}`
-- `POST /image/action` (`remove` | `blacklist` | `restore`)
-- `GET /image?path=...`
 - `POST /identity/{identity_id}/label`
 - `POST /identity/merge`
 - `POST /search`
+- `POST /image/action` (`remove` | `blacklist` | `restore`)
+
+### Review (unassigned) endpoints
+
+- `GET /images/unassigned` — list noise + no_face images
+- `GET /images/unassigned/count` — count by status
+- `POST /image/reassign` — assign unassigned image to an identity
+- `POST /images/unassigned/recluster` — re-run DBSCAN on noise embeddings
+- `POST /images/unassigned/reanalyze` — re-run face detection on no_face images
+
+### Training endpoints
+
 - `POST /export/lora`
 - `POST /train/lora`
 - `GET /jobs/train/active`
@@ -221,13 +315,42 @@ The API serves the web UI at `http://localhost:8025/ui/`.
 - `POST /config/switch` — switch active config file
 - `PUT /config` — update config values (including `env`)
 
+### Auto-Generate endpoints
+
+- `POST /autogen/start` — start auto-generation for an identity (body: `identity_id`, `target_count`, `max_attempts`)
+- `POST /autogen/cancel` — cancel running auto-generation
+- `GET /autogen/status` — get current progress (matched, attempts, target_count, message)
+
 ## Web UI
 
-The web UI provides three tabs:
+The web UI provides five tabs:
 
-- **Studio** — scan, recluster, identities search, image browser
-- **Characters** — identity management, LoRA export & training
-- **Config** — config file selection, field editing, environment variables
+- **Studio** — scan, recluster, activity monitor, stats, training controls
+- **Characters** — identity management with photo preview, rename, remove/blacklist, select for export
+- **Review** — browse unassigned images (noise + no_face) with inline assign, re-cluster noise into tentative groups, re-analyze images that had no face
+- **Build Dataset** — auto-generate synthetic training images for a character via WebbDuck
+- **Config** — config file selection, field editing (paths, clustering, LoRA export, training params, env vars)
+
+### Build Dataset Tab
+
+The **Build Dataset** tab lets you generate synthetic training images for any character that has been labeled by the scan.
+
+How it works:
+1. Select a character from the dropdown (only characters with labels appear)
+2. Set target photos and max generation attempts
+3. Click **Generate** — the loop runs in the background:
+   - Builds random prompts from weighted template categories (shot, pose, hair, setting, clothing, style)
+   - Sends them to WebbDuck's `/test` API for generation
+   - Detects the face, extracts the embedding, and compares it to the identity's centroid
+   - Keeps matching images (adds to database as `assigned`) and deletes non-matching ones
+4. A progress bar shows matched/target count in real time (polls every 3s)
+5. Click **Cancel** to stop early
+
+Prerequisites:
+- The character must have a **label** (set in the Characters tab)
+- The character must have a **centroid** (run a scan first)
+- `auto_generate.base_model` must point to a valid SDXL checkpoint in `config.yaml`
+- A running WebbDuck instance at `auto_generate.webbduck_url` (default `http://localhost:8020`)
 
 Access it at `http://localhost:8025/ui/` when the API server is running. When installed as a WebbDuck plugin, the same UI appears in the DNADuck tab.
 
@@ -239,7 +362,7 @@ Access it at `http://localhost:8025/ui/` when the API server is running. When in
 - Existing images are skipped on re-scan if `size` + `mtime` match DB records.
 - Updated/new files are re-embedded and reassigned incrementally.
 - Metadata/identity counts are DB-backed and can include prior tracked images until moderated or reset.
-- No external APIs are used.
+- No external APIs are used (except auto-generation, which calls WebbDuck's local `/test` endpoint).
 - Default trainer hook targets `kohya_ss/sd-scripts` via `tools/train_kohya_lora.py`.
 - Default trainer optimizer is `auto` (`AdamW8bit` with `bitsandbytes`, otherwise `AdamW`).
 - Default attention backend is `auto` (`xformers` when installed, otherwise `sdpa`).
@@ -250,5 +373,11 @@ Access it at `http://localhost:8025/ui/` when the API server is running. When in
 - Training progress now reports live step counters and ETA in `/activity` when available.
 - Pause/resume: call `POST /jobs/train/pause`, then start training again to auto-resume from latest saved state.
 - Config `env` variables are injected into the training subprocess via `subprocess.Popen(env=...)`.
+- Auto-generation requires a running WebbDuck server at `auto_generate.webbduck_url` (default `http://localhost:8020`).
+- The identity must have a label and centroid (run scan + set name first) before auto-generation will work.
+- Auto-generation prompt templates use **weighted random selection** — adjust weights in `config.yaml` to control distribution (e.g. `side profile: 30` means ~30% of shots will be side profiles).
+- Generated images that match the identity's embedding are added to the database as `assigned`; non-matching images are deleted.
+- The `Review` tab shows unassigned images. Use **Re-cluster Noise** to find tentative groups, then assign to identities.
+- Use **Re-analyze No-Face** to re-run face detection on images that previously had no face detected (different `det_size` or improved model may find faces now).
 
 See `TESTING.md` for exact validation steps.

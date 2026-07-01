@@ -14,13 +14,20 @@ from pathlib import Path
 from .database import (
     compute_identity_drift,
     count_identity_images,
+    count_unassigned_images,
+    deserialize_embedding,
     fetch_image_by_path,
     list_all_images,
     list_identities,
     list_identity_images_page,
+    list_no_face_images,
+    list_noise_with_embeddings,
+    list_unassigned_images,
     merge_identities,
     open_database,
     rebuild_identity_stats,
+    serialize_embedding,
+    update_image_embedding,
     update_image_status,
     update_identity_label,
 )
@@ -213,7 +220,276 @@ def list_images(config_path: Path) -> list[dict]:
         conn.close()
 
 
+def fetch_unassigned_images(
+    config_path: Path,
+    *,
+    statuses: tuple[str, ...] | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    try:
+        rows = list_unassigned_images(conn, statuses=statuses, limit=limit, offset=offset)
+        total = count_unassigned_images(conn, statuses=statuses)
+        images = [
+            {
+                "path": row["path"],
+                "sha256": row["sha256"],
+                "status": row["status"],
+                "identity_id": row["identity_id"],
+                "size_bytes": row["size_bytes"],
+                "mtime": row["mtime"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "last_seen_at": row["last_seen_at"],
+            }
+            for row in rows
+        ]
+        return {"images": images, "total": total, "limit": limit, "offset": offset}
+    finally:
+        conn.close()
+
+
+def count_unassigned(config_path: Path) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    try:
+        return {
+            "needs_review": count_unassigned_images(conn, statuses=("noise", "no_face")),
+            "noise": count_unassigned_images(conn, statuses=("noise",)),
+            "no_face": count_unassigned_images(conn, statuses=("no_face",)),
+        }
+    finally:
+        conn.close()
+
+
+def reassign_image(config_path: Path, image_path: Path, identity_id: int) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    resolved = image_path.resolve()
+    try:
+        before = fetch_image_by_path(conn, resolved)
+        if before is None:
+            raise FileNotFoundError(f"Image is not tracked in DNADuck DB: {resolved}")
+        ok = update_image_status(
+            conn,
+            path=resolved,
+            status="assigned",
+            identity_id=int(identity_id),
+            clear_embedding=False,
+        )
+        if not ok:
+            raise FileNotFoundError(f"Image is not tracked in DNADuck DB: {resolved}")
+        rebuild_identity_stats(conn)
+        after = fetch_image_by_path(conn, resolved)
+        return {
+            "ok": True,
+            "image_path": str(resolved),
+            "identity_id": int(identity_id),
+            "before_status": None if before is None else str(before["status"]),
+            "before_identity_id": None if before is None else before["identity_id"],
+            "after_status": None if after is None else str(after["status"]),
+            "after_identity_id": None if after is None else after["identity_id"],
+        }
+    finally:
+        conn.close()
+
+
 def apply_image_action(config_path: Path, image_path: Path, action: str) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    resolved = image_path.resolve()
+    normalized_action = str(action).strip().lower()
+    try:
+        before = fetch_image_by_path(conn, resolved)
+        if before is None:
+            raise FileNotFoundError(f"Image is not tracked in DNADuck DB: {resolved}")
+
+        if normalized_action == "remove":
+            ok = update_image_status(
+                conn,
+                path=resolved,
+                status="removed",
+                identity_id=None,
+                clear_embedding=False,
+            )
+        elif normalized_action == "blacklist":
+            ok = update_image_status(
+                conn,
+                path=resolved,
+                status="blacklisted",
+                identity_id=None,
+                clear_embedding=True,
+            )
+        elif normalized_action == "restore":
+            ok = update_image_status(
+                conn,
+                path=resolved,
+                status="noise",
+                identity_id=None,
+                clear_embedding=False,
+            )
+        else:
+            raise ValueError("Unsupported image action. Expected: remove | blacklist | restore")
+
+        if not ok:
+            raise FileNotFoundError(f"Image is not tracked in DNADuck DB: {resolved}")
+
+        rebuild_identity_stats(conn)
+        after = fetch_image_by_path(conn, resolved)
+        return {
+            "ok": True,
+            "action": normalized_action,
+            "image_path": str(resolved),
+            "before_status": None if before is None else str(before["status"]),
+            "before_identity_id": None if before is None else before["identity_id"],
+            "after_status": None if after is None else str(after["status"]),
+            "after_identity_id": None if after is None else after["identity_id"],
+        }
+    finally:
+        conn.close()
+
+
+def recluster_noise(config_path: Path) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    try:
+        rows = list_noise_with_embeddings(conn)
+    finally:
+        conn.close()
+
+    if not rows:
+        return {"clusters": [], "images": [], "total": 0}
+
+    import numpy as np
+
+    paths = []
+    vectors = []
+    for row in rows:
+        embedding = deserialize_embedding(row["embedding"], row["embedding_dim"])
+        if embedding is not None:
+            paths.append(str(row["path"]))
+            vectors.append(embedding)
+
+    if len(vectors) < 2:
+        return {"clusters": [], "images": [{"path": p, "status": "noise"} for p in paths], "total": len(paths)}
+
+    matrix = np.stack(vectors, axis=0)
+
+    from sklearn.cluster import DBSCAN
+
+    eps = float(config.get("eps_realism", 0.31))
+    min_samples = int(config.get("min_samples", 4))
+    mode = str(config.get("mode", "realism")).strip().lower()
+    if mode == "anime":
+        eps = float(config.get("eps_anime", 0.47))
+    labels = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine").fit_predict(matrix)
+
+    clusters: dict[int, list[str]] = {}
+    standalone: list[str] = []
+    for path, label in zip(paths, labels.tolist()):
+        if int(label) == -1:
+            standalone.append(path)
+        else:
+            clusters.setdefault(int(label), []).append(path)
+
+    cluster_list = [
+        {"cluster_id": cid, "images": [{"path": p, "status": "noise", "cluster_id": cid} for p in members]}
+        for cid, members in sorted(clusters.items())
+    ]
+
+    all_images: list[dict] = []
+    for c in cluster_list:
+        all_images.extend(c["images"])
+    for p in standalone:
+        all_images.append({"path": p, "status": "noise"})
+
+    return {
+        "clusters": cluster_list,
+        "images": all_images,
+        "total": len(all_images),
+        "recluster_eps": eps,
+    }
+
+
+def reanalyze_no_face(config_path: Path) -> dict:
+    config = load_runtime_config(config_path=config_path)
+    conn = open_database(Path(config["database_path"]))
+    try:
+        rows = list_no_face_images(conn)
+    finally:
+        conn.close()
+
+    if not rows:
+        return {"clusters": [], "images": [], "total": 0, "reanalyzed": 0, "new_faces": 0}
+
+    from .embedder import FaceEmbedder
+
+    embedder = FaceEmbedder(config)
+    import numpy as np
+    from pathlib import Path
+
+    reanalyzed = 0
+    new_faces = 0
+    new_embeddings: list[tuple[str, np.ndarray]] = []
+    still_no_face: list[str] = []
+
+    for row in rows:
+        image_path = Path(str(row["path"]))
+        if not image_path.exists():
+            still_no_face.append(str(image_path))
+            continue
+
+        reanalyzed += 1
+        import cv2
+
+        array_bgr = cv2.imread(str(image_path))
+        if array_bgr is None:
+            still_no_face.append(str(image_path))
+            continue
+
+        from .embedder import LoadedImage
+
+        loaded = LoadedImage(path=image_path, array_bgr=array_bgr)
+        result = embedder.extract([loaded])
+
+        if str(image_path) in result.embedded_paths:
+            idx = result.embedded_paths.index(str(image_path))
+            new_embeddings.append((str(image_path), result.embeddings[idx]))
+            new_faces += 1
+        else:
+            still_no_face.append(str(image_path))
+
+    conn2 = open_database(Path(config["database_path"]))
+    try:
+        from .database import serialize_embedding, update_image_embedding
+
+        for path_str, vector in new_embeddings:
+            blob, dim = serialize_embedding(vector)
+            update_image_embedding(
+                conn2,
+                path=Path(path_str),
+                status="noise",
+                identity_id=None,
+                embedding=blob,
+                embedding_dim=dim,
+            )
+        conn2.commit()
+    finally:
+        conn2.close()
+
+    result_images = (
+        [{"path": p, "status": "noise"} for p, _ in new_embeddings]
+        + [{"path": p, "status": "no_face"} for p in still_no_face]
+    )
+
+    return {
+        "images": result_images,
+        "total": len(result_images),
+        "reanalyzed": reanalyzed,
+        "new_faces": new_faces,
+    }
     config = load_runtime_config(config_path=config_path)
     conn = open_database(Path(config["database_path"]))
     resolved = image_path.resolve()
@@ -989,6 +1265,40 @@ class _TrainProgressTracker:
             # Smooth short spikes to prevent wild ETA jumps.
             self._last_rate_steps_per_s = (prev * 0.70) + (instant * 0.30)
         return self._last_rate_steps_per_s
+
+
+def auto_generate(
+    config_path: Path,
+    identity_id: int,
+    target_count: int = 50,
+    max_attempts: int = 500,
+) -> dict:
+    """Start auto-generation in a background thread. Returns status immediately."""
+    from .autogen import run_auto_generate
+
+    thread = threading.Thread(
+        target=run_auto_generate,
+        kwargs={
+            "config_path": config_path,
+            "identity_id": int(identity_id),
+            "target_count": int(target_count),
+            "max_attempts": int(max_attempts),
+        },
+        daemon=True,
+        name=f"dnaduck-autogen-{int(identity_id)}",
+    )
+    thread.start()
+    return get_auto_generate_status()
+
+
+def cancel_auto_generate() -> dict:
+    from .autogen import cancel_auto_generate as _cancel
+    return _cancel()
+
+
+def get_auto_generate_status() -> dict:
+    from .autogen import get_auto_generate_status as _status
+    return _status()
 
 
 def _write_train_log(

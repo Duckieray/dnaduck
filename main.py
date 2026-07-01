@@ -77,6 +77,29 @@ def parse_args() -> argparse.Namespace:
     image_action.add_argument("image_path", type=Path, help="Image path")
 
     subparsers.add_parser("images", help="List tracked images")
+
+    list_unassigned = subparsers.add_parser("list-unassigned", help="List unassigned (noise/no_face) images")
+    list_unassigned.add_argument("--limit", type=int, default=200, help="Page size")
+    list_unassigned.add_argument("--offset", type=int, default=0, help="Page offset")
+
+    subparsers.add_parser("count-unassigned", help="Count unassigned images by status")
+
+    reassign = subparsers.add_parser("reassign", help="Assign an unassigned image to an identity")
+    reassign.add_argument("identity_id", type=int, help="Identity ID to assign to")
+    reassign.add_argument("image_path", type=Path, help="Image path to reassign")
+
+    subparsers.add_parser("recluster-noise", help="Re-cluster noise images into tentative groups")
+
+    subparsers.add_parser("reanalyze-no-face", help="Re-run face detection on no_face images")
+
+    autogen = subparsers.add_parser("autogen", help="Auto-generate images for an identity")
+    autogen.add_argument("identity_id", type=int, help="Identity ID to generate for")
+    autogen.add_argument("--target-count", type=int, default=50, help="Target number of matched images")
+    autogen.add_argument("--max-attempts", type=int, default=500, help="Maximum generation attempts")
+
+    subparsers.add_parser("autogen-cancel", help="Cancel running auto-generation")
+    subparsers.add_parser("autogen-status", help="Show auto-generation status")
+
     return parser.parse_args()
 
 
@@ -85,11 +108,16 @@ def main() -> None:
 
     from core.service import (
         apply_image_action,
+        count_unassigned,
         export_lora,
+        fetch_unassigned_images,
         get_identities,
         get_identity_detail,
         list_images,
         merge_identity_groups,
+        reanalyze_no_face,
+        reassign_image,
+        recluster_noise,
         relabel_identity,
         scan_images,
         scan_recluster_from_scratch,
@@ -271,6 +299,67 @@ def main() -> None:
         for row in rows:
             print(f"path={row['path']} status={row['status']} identity_id={row['identity_id']}")
         print(f"total={len(rows)}")
+        return
+
+    if command == "list-unassigned":
+        result = fetch_unassigned_images(
+            config_path=config_path,
+            statuses=("noise", "no_face"),
+            limit=int(args.limit),
+            offset=int(args.offset),
+        )
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "count-unassigned":
+        result = count_unassigned(config_path=config_path)
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "reassign":
+        try:
+            result = reassign_image(
+                config_path=config_path,
+                image_path=args.image_path,
+                identity_id=int(args.identity_id),
+            )
+        except FileNotFoundError as exc:
+            print(f"error: {exc}")
+            return
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "recluster-noise":
+        result = recluster_noise(config_path=config_path)
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "reanalyze-no-face":
+        result = reanalyze_no_face(config_path=config_path)
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "autogen":
+        from core.autogen import run_auto_generate
+        result = run_auto_generate(
+            config_path=config_path,
+            identity_id=int(args.identity_id),
+            target_count=int(args.target_count),
+            max_attempts=int(args.max_attempts),
+        )
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "autogen-cancel":
+        from core.autogen import cancel_auto_generate
+        result = cancel_auto_generate()
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "autogen-status":
+        from core.autogen import get_auto_generate_status
+        result = get_auto_generate_status()
+        print(json.dumps(result, ensure_ascii=True))
         return
 
 

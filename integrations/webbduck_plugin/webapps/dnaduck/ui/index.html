@@ -25,6 +25,8 @@
       <nav class="nova-tabs" aria-label="DNADuck views">
         <button class="nav-tab active" data-view="studio" type="button">Studio</button>
         <button class="nav-tab" data-view="identities" type="button">Characters</button>
+        <button class="nav-tab" data-view="review" type="button">Review</button>
+        <button class="nav-tab" data-view="build" type="button">Build Dataset</button>
         <button class="nav-tab" id="cfg-tab-btn" data-view="config" type="button">Config</button>
       </nav>
 
@@ -225,6 +227,85 @@
               <div id="identity-images-grid" class="identity-images-grid"></div>
               <p class="muted status-note" id="identity-detail-feedback">Select a character group to begin.</p>
             </aside>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-review">
+        <section class="nova-block">
+          <div class="nova-block-title">
+            <span>Needs Review</span>
+            <span class="muted" id="review-count-label" style="font-weight:400;text-transform:none;margin-left:8px"></span>
+          </div>
+          <div class="nova-block-body">
+            <p class="muted">Unassigned images. Assign them to a character below or mark as ignored.</p>
+            <div id="review-grid" class="review-grid"></div>
+            <p class="muted" id="review-empty" style="display:none">No unassigned images found.</p>
+            <div id="review-actions" class="actions" style="margin-top:12px">
+              <button id="review-refresh-btn" class="btn btn-secondary" type="button">Refresh</button>
+              <button id="review-recluster-btn" class="btn btn-secondary" type="button">Re-cluster Noise</button>
+              <button id="review-reanalyze-btn" class="btn btn-secondary" type="button">Re-analyze No-Face</button>
+              <span id="review-loading-msg" class="muted" style="display:none;margin-left:8px">Loading...</span>
+            </div>
+            <div class="review-controls">
+              <label class="form-label" for="review-size-slider" style="margin-right:6px">Size</label>
+              <input id="review-size-slider" type="range" min="120" max="400" value="180" step="10"
+                     style="width:120px;vertical-align:middle" />
+              <span id="review-size-label" class="muted" style="margin-left:6px">180px</span>
+            </div>
+            <p class="muted status-note" id="review-error" style="display:none"></p>
+          </div>
+        </section>
+      </section>
+
+      <section class="view" id="view-build">
+        <section class="nova-block">
+          <div class="nova-block-title">Build Dataset</div>
+          <div class="nova-block-body">
+            <p class="muted">Generate synthetic training images for a character via WebbDuck. The identity must have a label and centroid (run scan + set name first).</p>
+            <div class="build-layout">
+              <div class="build-controls">
+                <label class="form-label" for="build-identity-select">Character</label>
+                <select id="build-identity-select" class="select">
+                  <option value="">Select a character...</option>
+                </select>
+                <div class="build-input-row">
+                  <div>
+                    <label class="form-label" for="build-target-count">Target Photos</label>
+                    <input class="input" id="build-target-count" type="number" min="1" value="50" />
+                  </div>
+                  <div>
+                    <label class="form-label" for="build-max-attempts">Max Attempts</label>
+                    <input class="input" id="build-max-attempts" type="number" min="1" value="500" />
+                  </div>
+                </div>
+                <div class="actions build-actions">
+                  <button id="build-start-btn" class="btn btn-primary" type="button">Generate</button>
+                  <button id="build-cancel-btn" class="btn btn-secondary" type="button" style="display:none">Cancel</button>
+                  <button id="build-refresh-btn" class="btn btn-secondary" type="button">Refresh Characters</button>
+                </div>
+                <div class="build-prereqs muted" id="build-prereqs" style="display:none"></div>
+              </div>
+              <div class="build-progress" id="build-progress" style="display:none">
+                <p><strong>Status:</strong> <span id="build-status-text">Idle</span></p>
+                <div class="build-progress-bar-track">
+                  <span id="build-progress-bar" class="progress-bar" style="width:0%"></span>
+                </div>
+                <p class="muted" id="build-progress-detail"></p>
+                <p class="muted" id="build-last-prompt" style="font-size:11px;word-break:break-all"></p>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="nova-block" style="margin-top:12px">
+          <div class="nova-block-title">
+            <span>Prompt Templates</span>
+            <button id="build-templates-toggle" class="btn btn-secondary" type="button" style="font-size:12px;padding:2px 10px;margin-left:8px">Show</button>
+            <button id="build-templates-save-btn" class="btn btn-primary" type="button" style="font-size:12px;padding:2px 10px;margin-left:8px;display:none">Save Templates</button>
+          </div>
+          <div class="nova-block-body" id="build-templates-body" style="display:none">
+            <p class="muted">Edit prompt template categories and their weights. Set weight to 0 to disable a template.</p>
+            <div id="build-templates-editor"></div>
           </div>
         </section>
       </section>

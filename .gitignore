@@ -21,6 +21,7 @@ dnaduck_output/
 trainer/sd-scripts/
 models/base/
 checkpoints/
+config.*.yaml
 
 # Environment / secrets
 .env

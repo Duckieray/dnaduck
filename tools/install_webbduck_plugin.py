@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 
@@ -32,6 +35,65 @@ def _resolve_plugins_root(args: argparse.Namespace) -> Path:
     return (Path.home() / ".webbduck" / "plugins").resolve()
 
 
+def _find_webbduck_port() -> int | None:
+    """Scan common ports to find a live WebbDuck server."""
+    env_port = os.environ.get("WEBBDUCK_PORT")
+    candidates = [8010, 8020, 8030]
+    if env_port:
+        try:
+            candidates.insert(0, int(env_port))
+        except (ValueError, TypeError):
+            pass
+    for port in candidates:
+        try:
+            req = urllib.request.Request(f"http://localhost:{port}/health", method="GET")
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                body = json.loads(resp.read().decode())
+                if body.get("ok") or body.get("status") == "ok":
+                    return port
+        except Exception:
+            continue
+    return None
+
+
+def _webbduck_port() -> int:
+    port = _find_webbduck_port()
+    if port is not None:
+        return port
+    env_port = os.environ.get("WEBBDUCK_PORT")
+    if env_port:
+        return int(env_port)
+    return 8020
+
+
+def _try_hot_reload(plugin_id: str) -> bool:
+    port = _webbduck_port()
+    url = f"http://localhost:{port}/plugins/web/{plugin_id}/reload"
+    try:
+        req = urllib.request.Request(url, method="POST", data=b"{}")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = json.loads(resp.read().decode())
+            if body.get("reloaded"):
+                print(f"Hot-reloaded plugin '{plugin_id}' via {url}")
+                return True
+            print(f"Reload endpoint returned unexpected response: {body}")
+            return False
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            print(
+                "WebbDuck server is running but does not support hot-reload "
+                "(endpoint not found). Restart WebbDuck to pick up the updated plugin."
+            )
+        else:
+            detail = exc.read().decode()[:200]
+            print(f"Reload request failed (HTTP {exc.code}): {detail}")
+        return False
+    except (urllib.error.URLError, ConnectionRefusedError, TimeoutError):
+        print("WebbDuck server is not running -- no reload needed.")
+        return False
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Install DNADuck as a WebbDuck web-app plugin.",
@@ -50,6 +112,11 @@ def _parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="Overwrite existing plugin files if already installed.",
+    )
+    parser.add_argument(
+        "--no-reload",
+        action="store_true",
+        help="Skip hot-reload attempt after installation.",
     )
     return parser.parse_args()
 
@@ -85,11 +152,10 @@ def main() -> int:
     print("DNADuck WebbDuck plugin installed.")
     print(f"source: {source_dir}")
     print(f"target: {target_dir}")
-    print("")
-    print("Next:")
-    print("1) Start/restart WebbDuck.")
-    print("2) Open WebbDuck and select the DNADuck tab.")
-    print("3) Use WebbDuck Settings -> Connect Remote Plugin for remote host:port routing.")
+
+    if not args.no_reload:
+        _try_hot_reload("dnaduck")
+
     return 0
 
 
