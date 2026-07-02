@@ -270,11 +270,16 @@
                   <option value="">Select a character...</option>
                 </select>
                 <label class="form-label" for="build-target-identity" style="margin-top:8px">
-                  Save To <span class="muted" style="font-weight:400;font-size:12px">(default: same character)</span>
+                  Save To <span class="muted" style="font-weight:400;font-size:12px">(default: same as match)</span>
                 </label>
                 <select id="build-target-identity" class="select">
-                  <option value="">Same character</option>
+                  <option value="">Same as match</option>
+                  <option value="__new__">Create New Character...</option>
                 </select>
+                <div id="build-new-character-row" style="display:none;margin-top:6px">
+                  <label class="form-label" for="build-new-character-name">New Character Name</label>
+                  <input class="input" id="build-new-character-name" type="text" placeholder="e.g. darius_b" />
+                </div>
                 <div class="build-input-row">
                   <div>
                     <label class="form-label" for="build-target-count">Target Photos</label>

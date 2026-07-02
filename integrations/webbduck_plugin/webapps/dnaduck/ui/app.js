@@ -1842,8 +1842,21 @@
     const identityId = parseInt(select?.value || "0", 10);
     if (!identityId || identityId < 1) return;
     const targetSelect = byId("build-target-identity");
-    const targetIdRaw = parseInt(targetSelect?.value || "0", 10);
-    const targetIdentityId = Number.isFinite(targetIdRaw) && targetIdRaw > 0 ? targetIdRaw : undefined;
+    const targetVal = targetSelect?.value || "";
+    let targetIdentityId = undefined;
+    let newCharacterLabel = undefined;
+    if (targetVal === "__new__") {
+      newCharacterLabel = String(byId("build-new-character-name")?.value || "").trim();
+      if (!newCharacterLabel) {
+        if (byId("build-prereqs")) byId("build-prereqs").textContent = "Enter a name for the new character.";
+        if (byId("build-prereqs")) byId("build-prereqs").style.display = "";
+        setButtonBusy("build-start-btn", false, "Generate");
+        return;
+      }
+    } else {
+      const targetIdRaw = parseInt(targetVal, 10);
+      targetIdentityId = Number.isFinite(targetIdRaw) && targetIdRaw > 0 ? targetIdRaw : undefined;
+    }
     const targetCount = parseInt(byId("build-target-count")?.value || "50", 10);
     const maxAttempts = parseInt(byId("build-max-attempts")?.value || "500", 10);
     const epsSlider = byId("build-eps");
@@ -1866,8 +1879,9 @@
         identity_id: identityId,
         target_count: Number.isFinite(targetCount) ? targetCount : 50,
         max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
-        target_identity_id: targetIdentityId,
       };
+      if (targetIdentityId !== undefined) body.target_identity_id = targetIdentityId;
+      if (newCharacterLabel !== undefined) body.new_character_label = newCharacterLabel;
       if (Number.isFinite(assignEps)) body.assign_eps_realism = assignEps;
       const status = await post("/autogen/start", body);
       if (status.error) {
@@ -2344,6 +2358,11 @@
       const el = byId("build-eps-value");
       const val = byId("build-eps")?.value;
       if (el && val) el.textContent = val;
+    });
+
+    byId("build-target-identity")?.addEventListener("change", () => {
+      const row = byId("build-new-character-row");
+      if (row) row.style.display = byId("build-target-identity")?.value === "__new__" ? "" : "none";
     });
 
     // Prompt Templates toggle + save

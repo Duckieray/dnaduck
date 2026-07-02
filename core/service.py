@@ -1275,9 +1275,28 @@ def auto_generate(
     assign_eps_realism: float | None = None,
     assign_eps_anime: float | None = None,
     target_identity_id: int | None = None,
+    new_character_label: str | None = None,
 ) -> dict:
     """Start auto-generation in a background thread. Returns status immediately."""
+    import numpy as np
     from .autogen import init_auto_generate_status, run_auto_generate
+    from .database import create_identity, open_database
+    from .utils import load_config
+
+    resolved_target: int | None = None
+    if new_character_label:
+        cfg = load_config(config_path.resolve())
+        db_path = Path(cfg["database_path"])
+        conn = open_database(db_path)
+        try:
+            dummy = np.zeros(768, dtype=np.float32)
+            new_id = create_identity(conn, centroid=dummy, label=new_character_label.strip())
+            conn.commit()
+            resolved_target = new_id
+        finally:
+            conn.close()
+    elif target_identity_id:
+        resolved_target = int(target_identity_id)
 
     # Initialize status BEFORE starting the thread so the first
     # get_auto_generate_status() call sees running=True.
@@ -1296,7 +1315,7 @@ def auto_generate(
             "max_attempts": int(max_attempts),
             "assign_eps_realism": assign_eps_realism,
             "assign_eps_anime": assign_eps_anime,
-            "target_identity_id": int(target_identity_id) if target_identity_id else None,
+            "target_identity_id": resolved_target,
         },
         daemon=True,
         name=f"dnaduck-autogen-{int(identity_id)}",

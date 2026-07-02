@@ -102,6 +102,7 @@ class AutoGenerateRequest(BaseModel):
     assign_eps_realism: float | None = Field(default=None, ge=0.01, le=1.0)
     assign_eps_anime: float | None = Field(default=None, ge=0.01, le=1.0)
     target_identity_id: int | None = Field(default=None, ge=1)
+    new_character_label: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 _ACTIVITY_LOCK = threading.Lock()
@@ -1131,6 +1132,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 assign_eps_realism=payload.assign_eps_realism,
                 assign_eps_anime=payload.assign_eps_anime,
                 target_identity_id=payload.target_identity_id,
+                new_character_label=payload.new_character_label,
             )
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Auto-generation failed: {exc}") from exc
