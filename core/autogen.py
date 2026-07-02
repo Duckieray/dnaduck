@@ -505,71 +505,80 @@ def run_auto_generate(
                     "Underperforming options detected (5+ attempts, 0 matches): %s",
                     underperformers,
                 )
-                catchup_eps = assign_eps + 0.08
-                log.info(
-                    "Starting catch-up pass with eps=%.3f for underperformers",
-                    catchup_eps,
-                )
-                catchup_attempts = 0
-                catchup_max = min(max_attempts - attempts, 50)
-                while matched < target_count and catchup_attempts < catchup_max and not _check_targets_done():
-                    if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
+                for u_cat, u_text, u_attempts in underperformers:
+                    if matched >= target_count:
                         break
-                    catchup_attempts += 1
-                    attempts += 1
-                    prompt, choices = _sample_with_distribution(templates)
-                    _set_status(
-                        matched=matched, attempts=attempts,
-                        message=f"Catch-up {catchup_attempts}/{catchup_max}: {prompt[:60]}...",
-                        last_prompt=prompt,
+                    log.info(
+                        "Catch-up for %s/%s: %d failed attempts, starting incremental eps",
+                        u_cat, u_text, u_attempts,
                     )
-                    log.info("Catch-up [%d/%d]: %s", catchup_attempts, catchup_max, prompt)
-                    gen_path = _generate_image_via_webbduck(
-                        prompt=prompt, negative_prompt=negative_prompt,
-                        webbduck_url=webbduck_url, base_model=base_model,
-                        cfg=cfg, steps=steps, width=width, height=height,
-                        scheduler=scheduler, second_pass_model=second_pass_model,
-                        loras=loras_cfg, embeddings=embeddings_cfg,
-                    )
-                    if gen_path is None:
-                        continue
-                    gen_file = Path(gen_path)
-                    if not gen_file.exists() and webbduck_output_dir:
-                        try:
-                            if "outputs/" in str(gen_path):
-                                rel = str(gen_path).split("outputs/", 1)[1].lstrip("/")
-                                resolved = Path(webbduck_output_dir) / rel
-                                if resolved.exists():
-                                    gen_file = resolved
-                        except Exception:
-                            pass
-                    if not gen_file.exists():
-                        continue
-                    for cat, val in choices.items():
-                        ac = attempt_counts[cat]
-                        ac[val] = ac.get(val, 0) + 1
-                    matched_ok, vector, cos_sim, cos_dist = _match_to_identity(
-                        gen_file, embedder, centroid, catchup_eps,
-                    )
-                    if matched_ok:
-                        matched += 1
-                        save_identity_id = target_identity_id if target_identity_id is not None else identity_id
-                        _add_to_dataset(config, gen_file, save_identity_id, vector)
-                        for cat, val in choices.items():
-                            mc = match_counts[cat]
-                            mc[val] = mc.get(val, 0) + 1
-                        log.info("Catch-up MATCH #%d: %s", matched, gen_file.name)
-                    else:
-                        try:
-                            gen_file.unlink()
-                        except Exception:
-                            pass
-                        log.info("Catch-up no match: deleted %s", gen_file.name)
-
-                log.info(
-                    "Catch-up complete: %d extra attempts (eps=%.3f)",
-                    catchup_attempts, catchup_eps,
-                )
+                    current_eps = assign_eps
+                    while matched < target_count and not _check_targets_done():
+                        if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
+                            break
+                        if current_eps > 0.80:
+                            log.warning("Catch-up eps=%.3f > 0.80, giving up on %s/%s", current_eps, u_cat, u_text)
+                            break
+                        batch_matched = 0
+                        for batch_attempt in range(5):
+                            if matched >= target_count or _check_targets_done():
+                                break
+                            if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
+                                break
+                            attempts += 1
+                            prompt, choices = _sample_with_distribution(templates)
+                            _set_status(
+                                matched=matched, attempts=attempts,
+                                message=f"Catch-up {u_cat}/{u_text} eps={current_eps:.2f}: {prompt[:50]}...",
+                                last_prompt=prompt,
+                            )
+                            log.info("Catch-up [eps=%.3f] %s/%s: %s", current_eps, u_cat, u_text, prompt)
+                            gen_path = _generate_image_via_webbduck(
+                                prompt=prompt, negative_prompt=negative_prompt,
+                                webbduck_url=webbduck_url, base_model=base_model,
+                                cfg=cfg, steps=steps, width=width, height=height,
+                                scheduler=scheduler, second_pass_model=second_pass_model,
+                                loras=loras_cfg, embeddings=embeddings_cfg,
+                            )
+                            if gen_path is None:
+                                continue
+                            gen_file = Path(gen_path)
+                            if not gen_file.exists() and webbduck_output_dir:
+                                try:
+                                    if "outputs/" in str(gen_path):
+                                        rel = str(gen_path).split("outputs/", 1)[1].lstrip("/")
+                                        resolved = Path(webbduck_output_dir) / rel
+                                        if resolved.exists():
+                                            gen_file = resolved
+                                except Exception:
+                                    pass
+                            if not gen_file.exists():
+                                continue
+                            for cat, val in choices.items():
+                                ac = attempt_counts[cat]
+                                ac[val] = ac.get(val, 0) + 1
+                            matched_ok, vector, cos_sim, cos_dist = _match_to_identity(
+                                gen_file, embedder, centroid, current_eps,
+                            )
+                            if matched_ok:
+                                matched += 1
+                                batch_matched += 1
+                                save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                                _add_to_dataset(config, gen_file, save_identity_id, vector)
+                                for cat, val in choices.items():
+                                    mc = match_counts[cat]
+                                    mc[val] = mc.get(val, 0) + 1
+                                log.info("Catch-up MATCH #%d: %s (eps=%.3f)", matched, gen_file.name, current_eps)
+                            else:
+                                try:
+                                    gen_file.unlink()
+                                except Exception:
+                                    pass
+                        if batch_matched > 0:
+                            log.info("Catch-up batch for %s/%s: %d matches at eps=%.3f", u_cat, u_text, batch_matched, current_eps)
+                        else:
+                            current_eps = min(current_eps + 0.05, 0.80)
+                            log.info("Catch-up batch for %s/%s: 0 matches, raising eps to %.3f", u_cat, u_text, current_eps)
 
         _set_status(
             matched=matched, attempts=attempts, running=False,
