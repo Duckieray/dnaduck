@@ -1765,7 +1765,7 @@
     const minMembers = parseInt(byId("min-members")?.value || "1", 10);
     const query = `?min_members=${Number.isFinite(minMembers) ? minMembers : 1}`;
     const result = await get(`/identities${query}`);
-    const rows = Array.isArray(result.identities) ? result.identities : [];
+    const rows = Array.isArray(result) ? result : (Array.isArray(result.identities) ? result.identities : []);
     renderIdentityRows(rows);
 
     _populateIdentitySelect("build-identity-select", rows, "Select a character...");
