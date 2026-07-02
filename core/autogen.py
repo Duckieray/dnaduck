@@ -315,6 +315,7 @@ def run_auto_generate(
     progress_callback=None,
     assign_eps_realism: float | None = None,
     assign_eps_anime: float | None = None,
+    target_identity_id: int | None = None,
 ) -> dict:
     global _AUTOGEN_CANCEL, _AUTOGEN_STATUS
 
@@ -486,7 +487,8 @@ def run_auto_generate(
             matched_ok, vector, cos_sim, cos_dist = _match_to_identity(gen_file, embedder, centroid, assign_eps)
             if matched_ok:
                 matched += 1
-                _add_to_dataset(config, gen_file, identity_id, vector)
+                save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                _add_to_dataset(config, gen_file, save_identity_id, vector)
                 for cat, val in choices.items():
                     mc = match_counts[cat]
                     mc[val] = mc.get(val, 0) + 1

@@ -265,9 +265,15 @@
             <p class="muted">Generate synthetic training images for a character via WebbDuck. The identity must have a label and centroid (run scan + set name first).</p>
             <div class="build-layout">
               <div class="build-controls">
-                <label class="form-label" for="build-identity-select">Character</label>
+                <label class="form-label" for="build-identity-select">Match Against</label>
                 <select id="build-identity-select" class="select">
                   <option value="">Select a character...</option>
+                </select>
+                <label class="form-label" for="build-target-identity" style="margin-top:8px">
+                  Save To <span class="muted" style="font-weight:400;font-size:12px">(default: same character)</span>
+                </label>
+                <select id="build-target-identity" class="select">
+                  <option value="">Same character</option>
                 </select>
                 <div class="build-input-row">
                   <div>

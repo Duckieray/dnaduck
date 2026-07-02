@@ -1730,12 +1730,36 @@
     updateSelectedExportSummary();
   }
 
+  function _populateIdentitySelect(selectId, rows, placeholder) {
+    const sel = byId(selectId);
+    if (!sel) return;
+    const prev = sel.value;
+    sel.innerHTML = "";
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = placeholder;
+    sel.appendChild(opt);
+    for (const item of rows) {
+      const id = Number(item.identity_id || 0);
+      if (!id) continue;
+      const label = String(item.label || `Group ${id}`);
+      const o = document.createElement("option");
+      o.value = String(id);
+      o.textContent = `${label} (Group ${id})`;
+      sel.appendChild(o);
+    }
+    if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  }
+
   async function loadIdentities() {
     const minMembers = parseInt(byId("min-members")?.value || "1", 10);
     const query = `?min_members=${Number.isFinite(minMembers) ? minMembers : 1}`;
     const result = await get(`/identities${query}`);
     const rows = Array.isArray(result.identities) ? result.identities : [];
     renderIdentityRows(rows);
+
+    _populateIdentitySelect("build-identity-select", rows, "Select a character...");
+    _populateIdentitySelect("build-target-identity", rows, "Same character");
 
     setStatValues({ identities: rows.length });
 
@@ -1817,6 +1841,9 @@
     const select = byId("build-identity-select");
     const identityId = parseInt(select?.value || "0", 10);
     if (!identityId || identityId < 1) return;
+    const targetSelect = byId("build-target-identity");
+    const targetIdRaw = parseInt(targetSelect?.value || "0", 10);
+    const targetIdentityId = Number.isFinite(targetIdRaw) && targetIdRaw > 0 ? targetIdRaw : undefined;
     const targetCount = parseInt(byId("build-target-count")?.value || "50", 10);
     const maxAttempts = parseInt(byId("build-max-attempts")?.value || "500", 10);
     const epsSlider = byId("build-eps");
@@ -1839,6 +1866,7 @@
         identity_id: identityId,
         target_count: Number.isFinite(targetCount) ? targetCount : 50,
         max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
+        target_identity_id: targetIdentityId,
       };
       if (Number.isFinite(assignEps)) body.assign_eps_realism = assignEps;
       const status = await post("/autogen/start", body);
