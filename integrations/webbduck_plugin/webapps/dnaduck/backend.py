@@ -886,6 +886,14 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
         stdout = _run_cli(["autogen-status"])
         return _parse_json_output(stdout)
 
+    @router.get("/autogen/stats")
+    def autogen_stats() -> list[dict]:
+        target = _resolve_backend_target(start_managed=False)
+        if target.api_base:
+            return _remote_request(target.api_base, "GET", "/autogen/stats")
+        stdout = _run_cli(["autogen-stats"])
+        return _parse_json_output(stdout)
+
     return router
 
 

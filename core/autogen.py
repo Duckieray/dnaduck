@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
 import random
 import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 import cv2
@@ -14,6 +16,78 @@ import numpy as np
 from .embedder import FaceEmbedder, LoadedImage
 
 log = logging.getLogger("dnaduck.autogen")
+
+
+# ── Prompt option accuracy stats ──────────────────────────────────────
+
+def _stats_path(config_path: Path) -> Path:
+    return config_path.resolve().parent / ".dnaduck_autogen_stats.json"
+
+
+def _load_autogen_stats(config_path: Path) -> dict:
+    sp = _stats_path(config_path)
+    if not sp.exists():
+        return {"prompt_stats": {}, "version": 1, "last_updated": ""}
+    try:
+        with open(sp, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"prompt_stats": {}, "version": 1, "last_updated": ""}
+
+
+def _save_autogen_stats(config_path: Path, stats: dict):
+    stats["last_updated"] = datetime.now(timezone.utc).isoformat()
+    sp = _stats_path(config_path)
+    try:
+        with open(sp, "w") as f:
+            json.dump(stats, f, indent=2)
+    except Exception as exc:
+        log.warning("Failed to save autogen stats: %s", exc)
+
+
+def _merge_autogen_stats(
+    stats: dict,
+    template_cats: list[str],
+    attempt_counts: dict[str, dict[str, int]],
+    match_counts: dict[str, dict[str, int]],
+    assign_eps_used: float,
+):
+    ps = stats.setdefault("prompt_stats", {})
+    for cat in template_cats:
+        cat_stats = ps.setdefault(cat, {})
+        for text in attempt_counts.get(cat, {}):
+            a = attempt_counts[cat][text]
+            m = match_counts[cat].get(text, 0)
+            entry = cat_stats.setdefault(text, {"attempts": 0, "matches": 0, "best_eps": None})
+            entry["attempts"] += a
+            entry["matches"] += m
+            if m > 0:
+                if entry["best_eps"] is None or assign_eps_used < entry["best_eps"]:
+                    entry["best_eps"] = assign_eps_used
+                entry["last_match_eps"] = assign_eps_used
+
+
+def _autogen_stats_readable(config_path: Path) -> list[dict]:
+    """Return per-option accuracy stats sorted by accuracy ascending."""
+    stats = _load_autogen_stats(config_path)
+    ps = stats.get("prompt_stats", {})
+    rows = []
+    for cat, options in ps.items():
+        for text, data in options.items():
+            a = data.get("attempts", 0)
+            m = data.get("matches", 0)
+            pct = (m / a * 100) if a > 0 else 0.0
+            rows.append({
+                "category": cat,
+                "text": text,
+                "attempts": a,
+                "matches": m,
+                "accuracy": round(pct, 1),
+                "best_eps": data.get("best_eps"),
+                "last_match_eps": data.get("last_match_eps"),
+            })
+    rows.sort(key=lambda r: r["accuracy"])
+    return rows
 
 _AUTOGEN_CANCEL: threading.Event | None = None
 _AUTOGEN_LOCK = threading.Lock()
@@ -505,14 +579,28 @@ def run_auto_generate(
                     "Underperforming options detected (5+ attempts, 0 matches): %s",
                     underperformers,
                 )
+                # Load historical stats to use smarter starting eps
+                historical_stats = _load_autogen_stats(config_path)
+                historical_ps = historical_stats.get("prompt_stats", {})
                 for u_cat, u_text, u_attempts in underperformers:
                     if matched >= target_count:
                         break
-                    log.info(
-                        "Catch-up for %s/%s: %d failed attempts, starting incremental eps",
-                        u_cat, u_text, u_attempts,
-                    )
-                    current_eps = assign_eps
+                    # Check if this option has ever matched before, and use its best_eps
+                    entry = historical_ps.get(u_cat, {}).get(u_text, {})
+                    historical_best_eps = entry.get("best_eps")
+                    if historical_best_eps is not None:
+                        start_eps = min(historical_best_eps + 0.05, 0.80)
+                        log.info(
+                            "Catch-up for %s/%s: %d failed attempts, historical best_eps=%.3f, starting at %.3f",
+                            u_cat, u_text, u_attempts, historical_best_eps, start_eps,
+                        )
+                    else:
+                        start_eps = assign_eps
+                        log.info(
+                            "Catch-up for %s/%s: %d failed attempts, no history, starting at %.3f",
+                            u_cat, u_text, u_attempts, start_eps,
+                        )
+                    current_eps = start_eps
                     while matched < target_count and not _check_targets_done():
                         if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
                             break
@@ -579,6 +667,11 @@ def run_auto_generate(
                         else:
                             current_eps = min(current_eps + 0.05, 0.80)
                             log.info("Catch-up batch for %s/%s: 0 matches, raising eps to %.3f", u_cat, u_text, current_eps)
+
+        # ── Persist accuracy stats ────────────────────────────────────
+        stats = _load_autogen_stats(config_path)
+        _merge_autogen_stats(stats, template_cats, attempt_counts, match_counts, assign_eps)
+        _save_autogen_stats(config_path, stats)
 
         _set_status(
             matched=matched, attempts=attempts, running=False,

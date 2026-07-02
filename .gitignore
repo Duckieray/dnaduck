@@ -33,3 +33,4 @@ config.*.yaml
 Thumbs.db
 .idea/
 .vscode/
+.dnaduck_autogen_stats.json

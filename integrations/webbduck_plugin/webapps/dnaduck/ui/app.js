@@ -2087,6 +2087,42 @@
     }
   }
 
+  async function renderBuildStats() {
+    const container = byId("build-stats-table");
+    if (!container) return;
+    try {
+      const rows = await get("/autogen/stats");
+      if (!rows || rows.length === 0) {
+        container.innerHTML = '<p class="muted">No stats yet. Run an autogen batch to collect data.</p>';
+        return;
+      }
+      let html = `<table class="data-table" style="width:100%;font-size:12px">
+        <thead><tr>
+          <th style="text-align:left">Category</th>
+          <th style="text-align:left">Option</th>
+          <th style="text-align:right">Attempts</th>
+          <th style="text-align:right">Matches</th>
+          <th style="text-align:right">Accuracy</th>
+          <th style="text-align:right">Best EPS</th>
+        </tr></thead><tbody>`;
+      for (const r of rows) {
+        const color = r.accuracy < 30 ? "var(--danger, #e74c3c)" : r.accuracy < 60 ? "var(--warning, #f39c12)" : "var(--success, #2ecc71)";
+        html += `<tr>
+          <td>${escHtml(r.category)}</td>
+          <td>${escHtml(r.text)}</td>
+          <td style="text-align:right">${r.attempts}</td>
+          <td style="text-align:right">${r.matches}</td>
+          <td style="text-align:right;color:${color};font-weight:bold">${r.accuracy}%</td>
+          <td style="text-align:right">${r.best_eps != null ? r.best_eps.toFixed(3) : "—"}</td>
+        </tr>`;
+      }
+      html += "</tbody></table>";
+      container.innerHTML = html;
+    } catch (err) {
+      container.innerHTML = `<p class="error">Failed to load stats: ${err.message}</p>`;
+    }
+  }
+
   async function init() {
     renderEventFeed();
     setStatValues({
@@ -2426,6 +2462,23 @@
 
     byId("build-templates-save-btn")?.addEventListener("click", () => {
       void saveBuildTemplates();
+    });
+
+    // Prompt Accuracy toggle
+    byId("build-stats-toggle")?.addEventListener("click", () => {
+      const body = byId("build-stats-body");
+      const btn = byId("build-stats-toggle");
+      if (!body) return;
+      const showing = body.style.display !== "none";
+      body.style.display = showing ? "none" : "";
+      if (btn) btn.textContent = showing ? "Show" : "Hide";
+      if (!showing) {
+        void renderBuildStats();
+        setTimeout(() => {
+          const block = body.closest(".nova-block");
+          if (block) block.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 50);
+      }
     });
 
     document.querySelectorAll(".nav-tab").forEach((tab) => {

@@ -99,6 +99,7 @@ def parse_args() -> argparse.Namespace:
 
     subparsers.add_parser("autogen-cancel", help="Cancel running auto-generation")
     subparsers.add_parser("autogen-status", help="Show auto-generation status")
+    subparsers.add_parser("autogen-stats", help="Show prompt option accuracy stats")
 
     return parser.parse_args()
 
@@ -359,6 +360,12 @@ def main() -> None:
     if command == "autogen-status":
         from core.autogen import get_auto_generate_status
         result = get_auto_generate_status()
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "autogen-stats":
+        from core.autogen import _autogen_stats_readable
+        result = _autogen_stats_readable(args.config)
         print(json.dumps(result, ensure_ascii=True))
         return
 

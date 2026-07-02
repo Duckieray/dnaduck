@@ -1159,6 +1159,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Status check failed: {exc}") from exc
 
+    @app.get("/autogen/stats")
+    def autogen_stats() -> list[dict]:
+        from core.autogen import _autogen_stats_readable
+
+        return _autogen_stats_readable(_ACTIVE_CONFIG_PATH)
+
     @app.get("/autogen/debug")
     def autogen_debug() -> dict:
         """Dump what autogen sees when it reads the config."""

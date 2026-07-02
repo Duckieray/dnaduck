@@ -1061,3 +1061,19 @@ code {
   border-color: #888;
   color: #eee;
 }
+
+.data-table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.data-table th,
+.data-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border, #333);
+}
+
+.data-table thead th {
+  border-bottom-width: 2px;
+  font-weight: 600;
+}
