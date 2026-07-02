@@ -1748,7 +1748,17 @@
       o.textContent = `${label} (Group ${id})`;
       sel.appendChild(o);
     }
+    if (selectId === "build-target-identity") {
+      const newOpt = document.createElement("option");
+      newOpt.value = "__new__";
+      newOpt.textContent = "Create New Character...";
+      sel.appendChild(newOpt);
+    }
     if (prev && [...sel.options].some((o) => o.value === prev)) sel.value = prev;
+    if (selectId === "build-target-identity") {
+      const row = byId("build-new-character-row");
+      if (row) row.style.display = sel.value === "__new__" ? "" : "none";
+    }
   }
 
   async function loadIdentities() {
@@ -1760,13 +1770,6 @@
 
     _populateIdentitySelect("build-identity-select", rows, "Select a character...");
     _populateIdentitySelect("build-target-identity", rows, "Same as match");
-    const targetSel = byId("build-target-identity");
-    if (targetSel) {
-      const newOpt = document.createElement("option");
-      newOpt.value = "__new__";
-      newOpt.textContent = "Create New Character...";
-      targetSel.appendChild(newOpt);
-    }
 
     setStatValues({ identities: rows.length });
 
