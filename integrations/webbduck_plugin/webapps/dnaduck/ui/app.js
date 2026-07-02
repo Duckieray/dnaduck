@@ -1759,7 +1759,14 @@
     renderIdentityRows(rows);
 
     _populateIdentitySelect("build-identity-select", rows, "Select a character...");
-    _populateIdentitySelect("build-target-identity", rows, "Same character");
+    _populateIdentitySelect("build-target-identity", rows, "Same as match");
+    const targetSel = byId("build-target-identity");
+    if (targetSel) {
+      const newOpt = document.createElement("option");
+      newOpt.value = "__new__";
+      newOpt.textContent = "Create New Character...";
+      targetSel.appendChild(newOpt);
+    }
 
     setStatValues({ identities: rows.length });
 
