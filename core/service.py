@@ -454,8 +454,8 @@ def reanalyze_no_face(config_path: Path) -> dict:
         loaded = LoadedImage(path=image_path, array_bgr=array_bgr)
         result = embedder.extract([loaded])
 
-        if str(image_path) in result.embedded_paths:
-            idx = result.embedded_paths.index(str(image_path))
+        if str(image_path) in [str(p) for p in result.embedded_paths]:
+            idx = [str(p) for p in result.embedded_paths].index(str(image_path))
             new_embeddings.append((str(image_path), result.embeddings[idx]))
             new_faces += 1
         else:

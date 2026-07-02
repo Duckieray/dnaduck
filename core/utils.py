@@ -20,10 +20,19 @@ def get_logger(name: str) -> logging.Logger:
 
 
 def configure_logging(level: str = "INFO") -> None:
+    fmt = "%(asctime)s %(levelname)s %(name)s: %(message)s"
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        format=fmt,
     )
+    root = logging.getLogger()
+    if not any(isinstance(h, logging.FileHandler) for h in root.handlers):
+        try:
+            fh = logging.FileHandler("/tmp/dnaduck.log", mode="a")
+            fh.setFormatter(logging.Formatter(fmt))
+            root.addHandler(fh)
+        except Exception:
+            pass
 
 
 @dataclass(frozen=True)
@@ -44,8 +53,8 @@ def load_config(config_path: Path) -> dict:
         "eps_realism": 0.31,
         "eps_anime": 0.47,
         "min_samples": 4,
-        "assign_eps_realism": 0.27,
-        "assign_eps_anime": 0.39,
+        "assign_eps_realism": 0.60,
+        "assign_eps_anime": 0.75,
         "model_name": "buffalo_l",
         "use_gpu": True,
         "det_size": [640, 640],
@@ -100,8 +109,8 @@ def load_config(config_path: Path) -> dict:
             "lora_weight": "1.0",
             "target_count": 50,
             "max_attempts": 500,
-            "assign_eps_realism": 0.27,
-            "assign_eps_anime": 0.39,
+            "assign_eps_realism": 0.60,
+            "assign_eps_anime": 0.75,
             "prompt_templates": {
                 "shot": {
                     "ultra closeup": 20,

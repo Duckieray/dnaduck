@@ -182,31 +182,43 @@ def _match_to_identity(
     embedder: FaceEmbedder,
     identity_centroid: np.ndarray,
     assign_eps: float,
-) -> bool:
+) -> tuple[bool, np.ndarray | None, float, float]:
     array_bgr = cv2.imread(str(image_path))
     if array_bgr is None:
-        return False
+        log.warning("Autogen: cv2.imread returned None for %s", image_path)
+        return False, None, 0.0, 1.0
     loaded = LoadedImage(path=image_path, array_bgr=array_bgr)
     result = embedder.extract([loaded])
-    if str(image_path) not in result.embedded_paths:
-        return False
-    idx = result.embedded_paths.index(str(image_path))
+    if str(image_path) not in [str(p) for p in result.embedded_paths]:
+        log.warning("Autogen: no face detected in %s", image_path)
+        return False, None, 0.0, 1.0
+
+    paths_str = [str(p) for p in result.embedded_paths]
+    idx = paths_str.index(str(image_path))
     vector = result.embeddings[idx]
-    dist = float(np.dot(vector, identity_centroid))
-    cos_sim = float(np.clip(dist, -1.0, 1.0))
+    cos_sim = float(np.clip(np.dot(vector, identity_centroid), -1.0, 1.0))
     cos_dist = 1.0 - cos_sim
-    return cos_dist <= assign_eps
+
+    log.warning(
+        "Autogen match check: file=%s cos_sim=%.4f cos_dist=%.4f threshold=%.4f matched=%s",
+        image_path.name,
+        cos_sim,
+        cos_dist,
+        assign_eps,
+        cos_dist <= assign_eps,
+    )
+
+    matched = cos_dist <= assign_eps
+    return matched, vector, cos_sim, cos_dist
 
 
-def _add_to_dataset(config: dict, image_path: Path, identity_id: int) -> None:
+def _add_to_dataset(config: dict, image_path: Path, identity_id: int, embedding: np.ndarray) -> None:
     import hashlib
-    import os
-
     from .database import (
         open_database,
         serialize_embedding,
-        update_image_embedding,
-        update_image_status,
+        upsert_image,
+        rebuild_identity_stats,
     )
 
     db_path = Path(config["database_path"])
@@ -214,25 +226,18 @@ def _add_to_dataset(config: dict, image_path: Path, identity_id: int) -> None:
     try:
         stat = image_path.stat()
         sha = hashlib.sha256(image_path.read_bytes()).hexdigest()
-        row = conn.execute(
-            """
-            SELECT id FROM images WHERE path = ?
-            """,
-            (str(image_path),),
-        ).fetchone()
-        if row is None:
-            conn.execute(
-                """
-                INSERT INTO images (path, sha256, size_bytes, mtime, status, identity_id, created_at, updated_at, last_seen_at)
-                VALUES (?, ?, ?, ?, 'assigned', ?, datetime('now'), datetime('now'), datetime('now'))
-                """,
-                (str(image_path), sha, stat.st_size, stat.st_mtime, int(identity_id)),
-            )
-        else:
-            update_image_status(
-                conn, path=image_path, status="assigned", identity_id=int(identity_id), clear_embedding=False,
-            )
-        conn.commit()
+        upsert_image(
+            conn,
+            path=image_path,
+            sha256=sha,
+            size_bytes=stat.st_size,
+            mtime=stat.st_mtime,
+            status="assigned",
+            identity_id=int(identity_id),
+            embedding=embedding,
+            face_score=None,
+        )
+        rebuild_identity_stats(conn)
     finally:
         conn.close()
 
@@ -328,6 +333,7 @@ def run_auto_generate(
 
         ag = config.get("auto_generate", {})
         webbduck_url = str(ag.get("webbduck_url", "http://webbduck.theducklabs.com"))
+        webbduck_output_dir = str(ag.get("webbduck_output_dir", "")).strip()
         base_model = str(ag.get("base_model", config.get("kohya_base_model", "")))
         if not base_model:
             _set_status(message="No base_model configured for auto-generation.", running=False)
@@ -356,8 +362,8 @@ def run_auto_generate(
         if ag.get("embeddings") and isinstance(ag["embeddings"], list):
             embeddings_cfg = [e for e in ag["embeddings"] if isinstance(e, dict) and e.get("name")]
         mode = str(config.get("mode", "realism"))
-        eps_r = float(ag.get("assign_eps_realism", config.get("assign_eps_realism", 0.27)))
-        eps_a = float(ag.get("assign_eps_anime", config.get("assign_eps_anime", 0.39)))
+        eps_r = float(ag.get("assign_eps_realism", config.get("assign_eps_realism", 0.60)))
+        eps_a = float(ag.get("assign_eps_anime", config.get("assign_eps_anime", 0.75)))
         if assign_eps_realism is not None:
             eps_r = float(assign_eps_realism)
         if assign_eps_anime is not None:
@@ -428,15 +434,27 @@ def run_auto_generate(
                 continue
 
             gen_file = Path(gen_path)
+            if not gen_file.exists() and webbduck_output_dir:
+                # WebbDuck returns web paths like "outputs/2024-07-01/0.png".
+                # Resolve them against webbduck_output_dir to get the real path.
+                try:
+                    if "outputs/" in str(gen_path):
+                        rel = str(gen_path).split("outputs/", 1)[1].lstrip("/")
+                        resolved = Path(webbduck_output_dir) / rel
+                        if resolved.exists():
+                            gen_file = resolved
+                except Exception:
+                    pass
             if not gen_file.exists():
                 log.warning("Generated file not found: %s", gen_file)
                 continue
 
             _set_status(message=f"Attempt {attempts}: analyzing...")
 
-            if _match_to_identity(gen_file, embedder, centroid, assign_eps):
+            matched_ok, vector, cos_sim, cos_dist = _match_to_identity(gen_file, embedder, centroid, assign_eps)
+            if matched_ok:
                 matched += 1
-                _add_to_dataset(config, gen_file, identity_id)
+                _add_to_dataset(config, gen_file, identity_id, vector)
                 log.info("MATCH #%d: %s (attempt %d)", matched, gen_file.name, attempts)
             else:
                 try:
@@ -477,12 +495,12 @@ def cancel_auto_generate() -> dict:
 
 def get_auto_generate_status() -> dict:
     with _AUTOGEN_LOCK:
-        if not _AUTOGEN_STATUS.get("running"):
+        if not _AUTOGEN_STATUS:
             return {
                 "running": False,
-                "message": _AUTOGEN_STATUS.get("message", "Idle"),
-                "last_prompt": _AUTOGEN_STATUS.get("last_prompt", ""),
-                "runtime_config": _AUTOGEN_STATUS.get("runtime_config"),
+                "message": "Idle",
+                "last_prompt": "",
+                "runtime_config": None,
             }
         return dict(_AUTOGEN_STATUS)
 

@@ -1,8 +1,9 @@
 (function () {
   const IS_PLUGIN = window.location.pathname.includes("/plugins/");
   const API_BASE = IS_PLUGIN
-    ? window.location.pathname.replace(/\/ui\/.*$/, "/api")
-    : window.location.pathname.replace(/\/ui\/.*$/, "") || "/";
+    ? window.location.pathname.replace(/\/ui\/.*$/, "/api").replace(/\/$/, "")
+    : "";
+
   const IDENTITY_PAGE_SIZE = 120;
   const ACTIVITY_POLL_MS_ACTIVE = 3000;
   const ACTIVITY_POLL_MS_IDLE = 15000;
@@ -23,6 +24,11 @@
   let eventFeed = [];
   let lastActivityNoticeKey = null;
   let pausedJobsCache = [];
+
+  function apiUrl(path) {
+    const cleanPath = String(path || "");
+    return `${API_BASE}${cleanPath.startsWith("/") ? cleanPath : `/${cleanPath}`}`;
+  }
 
   function byId(id) {
     return document.getElementById(id);
@@ -171,7 +177,7 @@
   }
 
   async function request(path, options) {
-    const response = await fetch(`${API_BASE}${path}`, options || {});
+    const response = await fetch(apiUrl(path), options || {});
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json")
       ? await response.json()
@@ -641,6 +647,15 @@
     if (label) label.textContent = currentName || "config.yaml";
   }
 
+  function val(id) {
+    return String(byId(id)?.value ?? "").trim();
+  }
+
+  function num(id) {
+    const n = Number(val(id));
+    return Number.isFinite(n) ? n : undefined;
+  }
+
   function setField(id, value) {
     const el = byId(id);
     if (!el) return;
@@ -900,70 +915,70 @@
   }
 
   async function handleConfigSave() {
-    const updates = {};
-    const fields = {
-      "cfg-input-folder": "input_folder",
-      "cfg-output-folder": "output_folder",
-      "cfg-database-path": "database_path",
-      "cfg-mode": "mode",
-      "cfg-eps-realism": "eps_realism",
-      "cfg-min-samples": "min_samples",
-      "cfg-lora-min-images": "lora_min_images",
-      "cfg-train-steps": "kohya_train_steps",
-      "cfg-learning-rate": "kohya_learning_rate",
-      "cfg-network-dim": "kohya_network_dim",
-      "cfg-network-alpha": "kohya_network_alpha",
-      "cfg-batch-size": "kohya_batch_size",
-      "cfg-num-repeats": "kohya_num_repeats",
-      "cfg-base-model": "kohya_base_model",
-      "cfg-output-name": "kohya_output_name",
-    };
-    for (const [id, key] of Object.entries(fields)) {
-      const el = byId(id);
-      if (!el) continue;
-      const val = el.value !== undefined ? el.value : el.textContent;
-      const trimmed = String(val || "").trim();
-      if (trimmed === "") continue;
-      if (key === "kohya_train_steps" || key === "min_samples" || key === "lora_min_images" || key === "kohya_network_dim" || key === "kohya_network_alpha" || key === "kohya_batch_size" || key === "kohya_num_repeats") {
-        const num = Number(trimmed);
-        if (Number.isFinite(num)) updates[key] = num;
-      } else if (key === "eps_realism") {
-        const num = Number(trimmed);
-        if (Number.isFinite(num)) updates[key] = num;
-      } else if (key === "kohya_learning_rate") {
-        const num = Number(trimmed);
-        if (Number.isFinite(num)) updates[key] = num;
-      } else {
-        updates[key] = trimmed;
-      }
-    }
-    // Environment variables from textarea
-    const envEl = byId("cfg-env-vars");
-    if (envEl) {
-      const envText = String(envEl.value || "").trim();
-      const envObj = {};
-      if (envText) {
-        for (const line of envText.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith("#")) continue;
-          const eqIdx = trimmed.indexOf("=");
-          if (eqIdx > 0) {
-            const k = trimmed.slice(0, eqIdx).trim();
-            const v = trimmed.slice(eqIdx + 1).trim();
-            if (k) envObj[k] = v;
-          }
+    try {
+      const updates = {};
+      const fields = {
+        "cfg-input-folder": "input_folder",
+        "cfg-output-folder": "output_folder",
+        "cfg-database-path": "database_path",
+        "cfg-mode": "mode",
+        "cfg-eps-realism": "eps_realism",
+        "cfg-min-samples": "min_samples",
+        "cfg-lora-min-images": "lora_min_images",
+        "cfg-train-steps": "kohya_train_steps",
+        "cfg-learning-rate": "kohya_learning_rate",
+        "cfg-network-dim": "kohya_network_dim",
+        "cfg-network-alpha": "kohya_network_alpha",
+        "cfg-batch-size": "kohya_batch_size",
+        "cfg-num-repeats": "kohya_num_repeats",
+        "cfg-base-model": "kohya_base_model",
+        "cfg-output-name": "kohya_output_name",
+      };
+      for (const [id, key] of Object.entries(fields)) {
+        const el = byId(id);
+        if (!el) continue;
+        const val = el.value !== undefined ? el.value : el.textContent;
+        const trimmed = String(val || "").trim();
+        if (trimmed === "") continue;
+        if (key === "kohya_train_steps" || key === "min_samples" || key === "lora_min_images" || key === "kohya_network_dim" || key === "kohya_network_alpha" || key === "kohya_batch_size" || key === "kohya_num_repeats") {
+          const num = Number(trimmed);
+          if (Number.isFinite(num)) updates[key] = num;
+        } else if (key === "eps_realism") {
+          const num = Number(trimmed);
+          if (Number.isFinite(num)) updates[key] = num;
+        } else if (key === "kohya_learning_rate") {
+          const num = Number(trimmed);
+          if (Number.isFinite(num)) updates[key] = num;
+        } else {
+          updates[key] = trimmed;
         }
       }
-      updates.env = envObj;
-    }
+      // Environment variables from textarea
+      const envEl = byId("cfg-env-vars");
+      if (envEl) {
+        const envText = String(envEl.value || "").trim();
+        const envObj = {};
+        if (envText) {
+          for (const line of envText.split("\n")) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith("#")) continue;
+            const eqIdx = trimmed.indexOf("=");
+            if (eqIdx > 0) {
+              const k = trimmed.slice(0, eqIdx).trim();
+              const v = trimmed.slice(eqIdx + 1).trim();
+              if (k) envObj[k] = v;
+            }
+          }
+        }
+        updates.env = envObj;
+      }
 
-    _gatherAutogenUpdates(updates);
-
-    try {
+      _gatherAutogenUpdates(updates);
       await put("/config", { updates });
       addEvent("Config saved");
       await loadCurrentConfig();
     } catch (error) {
+      console.error("Config save failed:", error);
       addEvent(`Config save failed: ${error.message}`);
     }
   }
@@ -1749,6 +1764,8 @@
 
   let buildPollTimer = null;
   let buildRunning = false;
+  let buildHasStarted = false;
+  let buildLastStatus = null;
 
   function updateBuildUI(status) {
     const startBtn = byId("build-start-btn");
@@ -1758,38 +1775,41 @@
     const detailText = byId("build-progress-detail");
     const promptText = byId("build-last-prompt");
     const bar = byId("build-progress-bar");
-    const running = Boolean(status?.running);
+
+    const payload = status && typeof status === "object" ? status : {};
+    buildLastStatus = { ...(buildLastStatus || {}), ...payload };
+    const running = Boolean(buildLastStatus.running);
     buildRunning = running;
+    if (running) buildHasStarted = true;
+
     if (startBtn) startBtn.style.display = running ? "none" : "";
     if (cancelBtn) cancelBtn.style.display = running ? "" : "none";
-    if (startBtn) startBtn.disabled = false;
-    if (cancelBtn) cancelBtn.disabled = false;
-    if (progress) progress.style.display = status?.attempts != null || running ? "" : "none";
-    if (statusText) statusText.textContent = String(status?.message || "Idle");
+
+    // Keep progress visible after the first build status, even after completion/error.
+    if (progress) {
+      progress.style.display = buildHasStarted || buildLastStatus.attempts != null ? "" : "none";
+    }
+
+    if (statusText) statusText.textContent = String(buildLastStatus.message || "Idle");
+
+    const matched = Number(buildLastStatus.matched || 0);
+    const attempts = Number(buildLastStatus.attempts || 0);
+    const target = Number(buildLastStatus.target_count || 0);
+
     if (bar) {
-      const matched = Number(status?.matched || 0);
-      const target = Number(status?.target_count || 1);
       const pct = target > 0 ? Math.min(100, (matched / target) * 100) : 0;
       bar.style.width = `${pct}%`;
     }
+
     if (detailText) {
-      const matched = Number(status?.matched || 0);
-      const attempts = Number(status?.attempts || 0);
-      const target = Number(status?.target_count || 0);
-      if (attempts > 0) {
-        detailText.textContent = `${matched} / ${target} matched (${numberText(attempts)} attempts)`;
-      } else {
-        detailText.textContent = "";
-      }
+      detailText.textContent =
+        attempts > 0
+          ? `${matched} / ${target} matched (${numberText(attempts)} attempts)`
+          : "";
     }
-    if (promptText && status?.last_prompt) {
-      promptText.textContent = `Last prompt: ${status.last_prompt}`;
-    }
-    const debugOutput = byId("build-debug-output");
-    if (debugOutput && status?.runtime_config) {
-      debugOutput.textContent = JSON.stringify({ runtime_config: status.runtime_config }, null, 2);
-      const body = byId("build-debug-body");
-      if (body) body.style.display = "block";
+
+    if (promptText && buildLastStatus.last_prompt) {
+      promptText.textContent = `Last prompt: ${buildLastStatus.last_prompt}`;
     }
   }
 
@@ -1803,6 +1823,16 @@
     const assignEps = epsSlider ? parseFloat(epsSlider.value) : undefined;
     const prereqs = byId("build-prereqs");
     if (prereqs) prereqs.style.display = "none";
+    buildHasStarted = true;
+    buildLastStatus = {
+      running: true,
+      matched: 0,
+      attempts: 0,
+      target_count: Number.isFinite(targetCount) ? targetCount : 50,
+      max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
+      message: "Starting...",
+    };
+    updateBuildUI(buildLastStatus);
     setButtonBusy("build-start-btn", true, "Starting...");
     try {
       const body = {
@@ -1822,9 +1852,12 @@
       addEvent(`Building dataset for character #${identityId}...`);
       void pollBuildStatus();
     } catch (error) {
-      updateBuildUI({ running: false });
-      if (prereqs) { prereqs.textContent = error.message; prereqs.style.display = ""; }
-      addEvent(`Build start failed: ${error.message}`);
+      updateBuildUI({
+        ...(buildLastStatus || {}),
+        running: true,
+        message: `Status temporarily unavailable: ${error.message}`,
+      });
+      buildPollTimer = setTimeout(pollBuildStatus, 3000);
     } finally {
       setButtonBusy("build-start-btn", false, "Generate");
     }
@@ -1848,20 +1881,28 @@
       clearTimeout(buildPollTimer);
       buildPollTimer = null;
     }
-    if (!buildRunning) return;
+
+    if (!buildRunning && !buildHasStarted) return;
+
     try {
       const status = await get("/autogen/status");
       updateBuildUI(status);
-      if (status?.running) {
+
+      if (buildLastStatus.running) {
         buildPollTimer = setTimeout(pollBuildStatus, 3000);
       } else {
         buildRunning = false;
-        addEvent(`Build finished: ${status?.message || "done"}`);
+        addEvent(`Build finished: ${buildLastStatus.message || "done"}`);
         void loadIdentities();
       }
     } catch (error) {
-      updateBuildUI({ running: false, message: "Status unavailable." });
-      buildRunning = false;
+      // Do not hide progress or stop polling on one bad status request.
+      updateBuildUI({
+        ...(buildLastStatus || {}),
+        running: true,
+        message: `Status temporarily unavailable: ${error.message}`,
+      });
+      buildPollTimer = setTimeout(pollBuildStatus, 3000);
     }
   }
 

@@ -16,9 +16,6 @@ from pathlib import Path
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
 def _source_plugin_dir() -> Path:
     return _repo_root() / "integrations" / "webbduck_plugin" / "webapps" / "dnaduck"
 
@@ -94,6 +91,86 @@ def _try_hot_reload(plugin_id: str) -> bool:
         return False
 
 
+def _kill_existing_dnaduck() -> list[str] | None:
+    """Kill any running dnaduck API server processes.
+    Returns the command-line args of the killed process so it can be restarted."""
+    import signal
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "run_api.py"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            return None
+
+        pids = [int(p) for p in result.stdout.strip().split()]
+
+        # Capture cmdline before killing (proc entries vanish on kill)
+        cmdline = None
+        for pid in pids:
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as f:
+                    raw = f.read().split(b"\0")
+                    parts = [p.decode("utf-8", errors="replace") for p in raw if p]
+                    if any("run_api.py" in p for p in parts):
+                        cmdline = parts
+                        break
+            except (FileNotFoundError, ProcessLookupError, OSError):
+                continue
+
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGTERM)
+                print(f"Killed existing dnaduck API server (PID {pid})")
+            except ProcessLookupError:
+                pass
+
+        import time
+        time.sleep(1)
+
+        for pid in pids:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        return cmdline
+    except Exception as exc:
+        print(f"Warning: could not kill existing dnaduck process: {exc}")
+        return None
+
+
+def _restart_dnaduck(cmdline: list[str] | None) -> None:
+    """Re-launch the dnaduck API server. Uses the previous cmdline if available,
+    otherwise falls back to a sensible default."""
+    import subprocess
+
+    if cmdline:
+        print(f"Restarting with: {' '.join(cmdline)}")
+        subprocess.Popen(cmdline, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+
+    # Fallback: try the standard location
+    python = _resolve_python()
+    dnaduck_root = _repo_root()
+    fallback = [
+        python,
+        str(dnaduck_root / "run_api.py"),
+        "--host", "127.0.0.1",
+        "--port", "8020",
+        "--config", str(dnaduck_root / "config.della.yaml"),
+    ]
+    print(f"Starting default dnaduck API server: {' '.join(fallback)}")
+    subprocess.Popen(fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _resolve_python() -> str:
+    import sys
+    return sys.executable
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Install DNADuck as a WebbDuck web-app plugin.",
@@ -123,6 +200,8 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    killed_cmdline = _kill_existing_dnaduck()
+
     source_dir = _source_plugin_dir()
     if not source_dir.exists():
         print(f"ERROR: source plugin directory not found: {source_dir}", file=sys.stderr)
@@ -155,6 +234,8 @@ def main() -> int:
 
     if not args.no_reload:
         _try_hot_reload("dnaduck")
+
+    _restart_dnaduck(killed_cmdline)
 
     return 0
 

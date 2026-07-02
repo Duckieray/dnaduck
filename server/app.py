@@ -744,6 +744,9 @@ def _run_train_job(job_id: str, cfg_path: Path, payload: dict) -> None:
 
 
 def create_app(config_path: str | None = None) -> FastAPI:
+    from core.utils import configure_logging
+    configure_logging("INFO")  # ensure root logger is setup before any autogen/etc logging
+
     app = FastAPI(title="DNADuck API", version="0.1.0")
     cfg_path = Path(config_path or os.environ.get("DNADUCK_CONFIG", "config.yaml")).resolve()
     global _ACTIVE_CONFIG_PATH
@@ -1154,8 +1157,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 "config_path": str(_ACTIVE_CONFIG_PATH),
                 "auto_generate": {
                     "webbduck_url": ag.get("webbduck_url"),
+                    "webbduck_output_dir": ag.get("webbduck_output_dir"),
                     "base_model": ag.get("base_model"),
                     "basic_prompt": ag.get("basic_prompt"),
+                    "loras": ag.get("loras"),
+                    "embeddings": ag.get("embeddings"),
                     "lora_name": ag.get("lora_name"),
                     "lora_weight": ag.get("lora_weight"),
                     "steps": ag.get("steps"),
