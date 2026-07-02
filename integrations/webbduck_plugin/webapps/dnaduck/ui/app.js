@@ -1885,10 +1885,12 @@
     updateBuildUI(buildLastStatus);
     setButtonBusy("build-start-btn", true, "Starting...");
     try {
+      const reqId = Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
       const body = {
         identity_id: identityId,
         target_count: Number.isFinite(targetCount) ? targetCount : 50,
         max_attempts: Number.isFinite(maxAttempts) ? maxAttempts : 500,
+        _reqId: reqId,
       };
       if (targetIdentityId !== undefined) body.target_identity_id = targetIdentityId;
       if (newCharacterLabel !== undefined) body.new_character_label = newCharacterLabel;
