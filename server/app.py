@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1123,9 +1123,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
             raise HTTPException(status_code=500, detail=f"Re-analysis failed: {exc}") from exc
 
     @app.post("/autogen/start")
-    def autogen_start(payload: AutoGenerateRequest) -> dict:
-        logging.getLogger("dnaduck.server").warning(
-            "autogen_start payload: identity_id=%s target_identity_id=%s new_character_label=%s",
+    async def autogen_start(payload: AutoGenerateRequest, request: Request) -> dict:
+        _log = logging.getLogger("dnaduck.server")
+        raw_body = await request.body()
+        _log.warning("autogen_start RAW body: %s", raw_body.decode("utf-8", errors="replace"))
+        _log.warning(
+            "autogen_start Pydantic: identity_id=%s target_identity_id=%s new_character_label=%s",
             payload.identity_id, payload.target_identity_id, payload.new_character_label,
         )
         try:
