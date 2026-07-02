@@ -57,80 +57,46 @@ def _weighted_choice(items: list[tuple[str, float]]) -> str:
     return random.choices(texts, weights=weights, k=1)[0]
 
 
+DEFAULT_TEMPLATES: dict[str, list[str]] = {
+    "shot": ["ultra closeup", "portrait", "3/4 shot", "full body", "side profile"],
+    "pose": ["facing camera", "facing to the side", "standing", "sitting"],
+    "hair": ["hair up", "hair down"],
+    "setting": ["in a coffee shop", "in a forest", "hiking on a trail", "in a park",
+                "on a city street", "in a studio", "in a garden", "at the beach"],
+    "clothing": ["casual clothes", "formal wear", "summer dress", "leather jacket", "uniform"],
+    "style": ["", "cinematic lighting", "soft natural lighting", "professional photography"],
+}
+
+
 def _load_prompt_templates(config: dict) -> dict[str, list[tuple[str, float]]]:
     raw = config.get("auto_generate", {})
     templates = raw.get("prompt_templates", {})
-    return {
-        "shot": _resolve_weighted_list(templates.get("shot", [
-            "ultra closeup",
-            "portrait",
-            "3/4 shot",
-            "full body",
-            "side profile",
-        ])),
-        "pose": _resolve_weighted_list(templates.get("pose", [
-            "facing camera",
-            "facing to the side",
-            "standing",
-            "sitting",
-        ])),
-        "hair": _resolve_weighted_list(templates.get("hair", [
-            "hair up",
-            "hair down",
-        ])),
-        "setting": _resolve_weighted_list(templates.get("setting", [
-            "in a coffee shop",
-            "in a forest",
-            "hiking on a trail",
-            "in a park",
-            "on a city street",
-            "in a studio",
-            "in a garden",
-            "at the beach",
-        ])),
-        "clothing": _resolve_weighted_list(templates.get("clothing", [
-            "casual clothes",
-            "formal wear",
-            "summer dress",
-            "leather jacket",
-            "uniform",
-        ])),
-        "style": _resolve_weighted_list(templates.get("style", [
-            "",
-            "cinematic lighting",
-            "soft natural lighting",
-            "professional photography",
-        ])),
-    }
+    if not templates:
+        return {k: _resolve_weighted_list(v) for k, v in DEFAULT_TEMPLATES.items()}
+    return {k: _resolve_weighted_list(v) for k, v in templates.items() if _resolve_weighted_list(v)}
+
+
+PROMPT_ORDER = ["shot", "orientation", "posture", "expression", "hair", "setting", "clothing", "style"]
 
 
 def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, float]]], basic_prompt: str = "") -> tuple[str, dict[str, str]]:
-    shot = _weighted_choice(templates["shot"])
-    pose = _weighted_choice(templates["pose"])
-    hair = _weighted_choice(templates["hair"])
-    setting = _weighted_choice(templates["setting"])
-    clothing = _weighted_choice(templates["clothing"])
-    style = _weighted_choice(templates["style"])
-    choices = {
-        "shot": shot,
-        "pose": pose,
-        "hair": hair,
-        "setting": setting,
-        "clothing": clothing,
-        "style": style,
-    }
+    choices = {}
+    for cat in PROMPT_ORDER:
+        if cat in templates:
+            choices[cat] = _weighted_choice(templates[cat])
     resolved_label = character_label
     if basic_prompt:
         basic = basic_prompt.replace("{trigger}", character_label)
-        parts = [f"{resolved_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
-        if style:
-            parts.append(style)
+        parts = [resolved_label]
+        for cat in PROMPT_ORDER:
+            if cat in choices and choices[cat]:
+                parts.append(choices[cat])
         parts.append("detailed face, high quality")
-        random_part = ", ".join(parts)
-        return f"{basic}, {random_part}", choices
-    parts = [f"{resolved_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
-    if style:
-        parts.append(style)
+        return f"{basic}, {', '.join(parts)}", choices
+    parts = [resolved_label]
+    for cat in PROMPT_ORDER:
+        if cat in choices and choices[cat]:
+            parts.append(choices[cat])
     parts.append("detailed face, high quality")
     return ", ".join(parts), choices
 
@@ -397,14 +363,12 @@ def run_auto_generate(
 
         matched = 0
         attempts = 0
-        match_counts: dict[str, dict[str, int]] = {
-            cat: {} for cat in ("shot", "pose", "hair", "setting", "clothing", "style")
-        }
+        template_cats = list(templates.keys())
+        match_counts: dict[str, dict[str, int]] = {cat: {} for cat in template_cats}
 
         def _sample_with_distribution(cur_templates: dict) -> tuple[str, dict[str, str]]:
-            cats = ["shot", "pose", "hair", "setting", "clothing", "style"]
-            adjusted = {cat: list(cur_templates[cat]) for cat in cats}
-            for cat in cats:
+            adjusted = {cat: list(cur_templates[cat]) for cat in template_cats}
+            for cat in template_cats:
                 items = adjusted[cat]
                 if not items:
                     continue
@@ -509,13 +473,8 @@ def run_auto_generate(
                 log.info("No match (attempt %d): deleted %s", attempts, gen_file.name)
 
         log.info(
-            "Autogen distribution: shot=%s pose=%s setting=%s clothing=%s hair=%s style=%s",
-            match_counts.get("shot", {}),
-            match_counts.get("pose", {}),
-            match_counts.get("setting", {}),
-            match_counts.get("clothing", {}),
-            match_counts.get("hair", {}),
-            match_counts.get("style", {}),
+            "Autogen distribution: %s",
+            {cat: match_counts.get(cat, {}) for cat in template_cats},
         )
 
         _set_status(

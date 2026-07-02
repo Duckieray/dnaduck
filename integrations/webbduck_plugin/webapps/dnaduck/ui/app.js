@@ -1982,7 +1982,14 @@
     }
   }
 
-  const TEMPLATE_CATEGORIES = ["shot", "pose", "hair", "setting", "clothing", "style"];
+  function getTemplateCategories() {
+    const cfg = currentConfig?.auto_generate?.prompt_templates;
+    if (cfg && typeof cfg === "object") {
+      const keys = Object.keys(cfg).filter((k) => k !== undefined);
+      if (keys.length > 0) return keys;
+    }
+    return ["shot", "pose", "hair", "setting", "clothing", "style"];
+  }
 
   function getPromptTemplates() {
     return currentConfig?.auto_generate?.prompt_templates || {};
@@ -1992,13 +1999,14 @@
     const editor = byId("build-templates-editor");
     if (!editor) return;
     const templates = getPromptTemplates();
+    const categories = getTemplateCategories();
     let html = "";
-    for (const cat of TEMPLATE_CATEGORIES) {
+    for (const cat of categories) {
       const items = templates[cat];
       const entries = items && typeof items === "object"
         ? Object.entries(items).filter(([k]) => k !== undefined)
         : [];
-      html += `<fieldset class="build-template-fieldset" data-category="${cat}"><legend>${cat}</legend>`;
+      html += `<fieldset class="build-template-fieldset" data-category="${cat}"><legend>${cat} <button class="btn-icon build-template-remove-cat" title="Remove category" data-action="remove-cat">&times;</button></legend>`;
       for (const [text, weight] of entries) {
         const w = typeof weight === "number" ? weight : 0;
         html += `<div class="build-template-row">
@@ -2009,33 +2017,52 @@
       }
       html += `<button class="build-template-add-btn" data-action="add">+ Add</button></fieldset>`;
     }
+    html += `<div style="margin-top:12px"><button class="btn" id="build-template-add-cat">+ Add Category</button></div>`;
     editor.innerHTML = html;
 
     // Delegated events
+    byId("build-template-add-cat")?.addEventListener("click", () => {
+      const name = prompt("New category name:");
+      if (!name || !name.trim()) return;
+      const fieldset = document.createElement("fieldset");
+      fieldset.className = "build-template-fieldset";
+      fieldset.dataset.category = name.trim();
+      fieldset.innerHTML =
+        `<legend>${escHtml(name.trim())} <button class="btn-icon build-template-remove-cat" title="Remove category" data-action="remove-cat">&times;</button></legend>` +
+        `<button class="build-template-add-btn" data-action="add">+ Add</button>`;
+      fieldset.querySelector("[data-action=add]").addEventListener("click", () => _addTemplateRow(fieldset));
+      fieldset.querySelector("[data-action=remove-cat]").addEventListener("click", () => fieldset.remove());
+      editor.insertBefore(fieldset, byId("build-template-add-cat")?.parentNode || null);
+    });
+    editor.querySelectorAll("[data-action=remove-cat]").forEach((btn) => {
+      btn.addEventListener("click", () => btn.closest("fieldset")?.remove());
+    });
     editor.querySelectorAll("[data-action=remove]").forEach((btn) => {
       btn.addEventListener("click", () => {
         btn.closest(".build-template-row")?.remove();
       });
     });
+    function _addTemplateRow(parent) {
+      const row = document.createElement("div");
+      row.className = "build-template-row";
+      row.innerHTML =
+        '<input class="input build-template-text" type="text" value="" placeholder="prompt text" />' +
+        '<input class="input build-template-weight" type="number" min="0" value="10" />' +
+        '<button class="btn-icon" title="Remove" data-action="remove">&times;</button>';
+      row.querySelector("[data-action=remove]").addEventListener("click", () => row.remove());
+      parent.insertBefore(row, parent.querySelector(".build-template-add-btn"));
+    }
     editor.querySelectorAll(".build-template-add-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const row = document.createElement("div");
-        row.className = "build-template-row";
-        row.innerHTML =
-          '<input class="input build-template-text" type="text" value="" placeholder="prompt text" />' +
-          '<input class="input build-template-weight" type="number" min="0" value="10" />' +
-          '<button class="btn-icon" title="Remove" data-action="remove">&times;</button>';
-        row.querySelector("[data-action=remove]").addEventListener("click", () => row.remove());
-        btn.parentNode.insertBefore(row, btn);
-      });
+      btn.addEventListener("click", () => _addTemplateRow(btn.parentNode));
     });
   }
 
   async function saveBuildTemplates() {
     const editor = byId("build-templates-editor");
     if (!editor) return;
+    const categories = getTemplateCategories();
     const templates = {};
-    for (const cat of TEMPLATE_CATEGORIES) {
+    for (const cat of categories) {
       const fieldset = editor.querySelector(`fieldset[data-category="${cat}"]`);
       if (!fieldset) continue;
       const rows = fieldset.querySelectorAll(".build-template-row");
