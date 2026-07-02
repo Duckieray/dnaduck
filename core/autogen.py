@@ -104,13 +104,21 @@ def _load_prompt_templates(config: dict) -> dict[str, list[tuple[str, float]]]:
     }
 
 
-def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, float]]], basic_prompt: str = "") -> str:
+def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, float]]], basic_prompt: str = "") -> tuple[str, dict[str, str]]:
     shot = _weighted_choice(templates["shot"])
     pose = _weighted_choice(templates["pose"])
     hair = _weighted_choice(templates["hair"])
     setting = _weighted_choice(templates["setting"])
     clothing = _weighted_choice(templates["clothing"])
     style = _weighted_choice(templates["style"])
+    choices = {
+        "shot": shot,
+        "pose": pose,
+        "hair": hair,
+        "setting": setting,
+        "clothing": clothing,
+        "style": style,
+    }
     resolved_label = character_label
     if basic_prompt:
         basic = basic_prompt.replace("{trigger}", character_label)
@@ -119,12 +127,12 @@ def _build_prompt(character_label: str, templates: dict[str, list[tuple[str, flo
             parts.append(style)
         parts.append("detailed face, high quality")
         random_part = ", ".join(parts)
-        return f"{basic}, {random_part}"
+        return f"{basic}, {random_part}", choices
     parts = [f"{resolved_label}, {shot}, {clothing}, {hair}, {pose}, {setting}"]
     if style:
         parts.append(style)
     parts.append("detailed face, high quality")
-    return ", ".join(parts)
+    return ", ".join(parts), choices
 
 
 def _generate_image_via_webbduck(
@@ -388,6 +396,30 @@ def run_auto_generate(
 
         matched = 0
         attempts = 0
+        match_counts: dict[str, dict[str, int]] = {
+            cat: {} for cat in ("shot", "pose", "hair", "setting", "clothing", "style")
+        }
+
+        def _sample_with_distribution(cur_templates: dict) -> tuple[str, dict[str, str]]:
+            cats = ["shot", "pose", "hair", "setting", "clothing", "style"]
+            adjusted = {cat: list(cur_templates[cat]) for cat in cats}
+            for cat in cats:
+                items = adjusted[cat]
+                if not items:
+                    continue
+                counts = match_counts[cat]
+                max_count = max(counts.values()) if counts else 0
+                if max_count < 2:
+                    continue
+                boosted = []
+                for text, base_w in items:
+                    c = counts.get(text, 0)
+                    gap = max_count - c
+                    boost = 1.0 + float(gap) * 2.0
+                    boosted.append((text, base_w * boost))
+                adjusted[cat] = boosted
+            p, c = _build_prompt(label, adjusted, basic_prompt=basic_prompt)
+            return p, c
 
         while matched < target_count and attempts < max_attempts:
             if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
@@ -395,7 +427,7 @@ def run_auto_generate(
                 break
 
             attempts += 1
-            prompt = _build_prompt(label, templates, basic_prompt=basic_prompt)
+            prompt, choices = _sample_with_distribution(templates)
             _set_status(
                 matched=matched, attempts=attempts,
                 message=f"Attempt {attempts}/{max_attempts}, generating...",
@@ -455,13 +487,30 @@ def run_auto_generate(
             if matched_ok:
                 matched += 1
                 _add_to_dataset(config, gen_file, identity_id, vector)
-                log.info("MATCH #%d: %s (attempt %d)", matched, gen_file.name, attempts)
+                for cat, val in choices.items():
+                    mc = match_counts[cat]
+                    mc[val] = mc.get(val, 0) + 1
+                log.info(
+                    "MATCH #%d: %s (attempt %d) shot=%s pose=%s",
+                    matched, gen_file.name, attempts,
+                    choices.get("shot", "?"), choices.get("pose", "?"),
+                )
             else:
                 try:
                     gen_file.unlink()
                 except Exception:
                     pass
                 log.info("No match (attempt %d): deleted %s", attempts, gen_file.name)
+
+        log.info(
+            "Autogen distribution: shot=%s pose=%s setting=%s clothing=%s hair=%s style=%s",
+            match_counts.get("shot", {}),
+            match_counts.get("pose", {}),
+            match_counts.get("setting", {}),
+            match_counts.get("clothing", {}),
+            match_counts.get("hair", {}),
+            match_counts.get("style", {}),
+        )
 
         _set_status(
             matched=matched, attempts=attempts, running=False,
