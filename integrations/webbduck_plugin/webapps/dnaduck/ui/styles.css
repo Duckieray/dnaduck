@@ -185,6 +185,7 @@ body::before {
 
 .view.active {
   display: block;
+  overflow-y: auto;
 }
 
 .nova-studio-grid {

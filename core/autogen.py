@@ -365,6 +365,7 @@ def run_auto_generate(
         attempts = 0
         template_cats = list(templates.keys())
         match_counts: dict[str, dict[str, int]] = {cat: {} for cat in template_cats}
+        attempt_counts: dict[str, dict[str, int]] = {cat: {} for cat in template_cats}
 
         def _sample_with_distribution(cur_templates: dict) -> tuple[str, dict[str, str]]:
             adjusted = {cat: list(cur_templates[cat]) for cat in template_cats}
@@ -385,6 +386,22 @@ def run_auto_generate(
                 adjusted[cat] = boosted
             p, c = _build_prompt(label, adjusted, basic_prompt=basic_prompt)
             return p, c
+
+        def _pick_underperformers() -> list[tuple[str, str, int]]:
+            result = []
+            for cat in template_cats:
+                attempts_cat = attempt_counts[cat]
+                matches_cat = match_counts[cat]
+                for text in attempts_cat:
+                    a = attempts_cat.get(text, 0)
+                    m = matches_cat.get(text, 0)
+                    if a >= 5 and m == 0:
+                        result.append((cat, text, a))
+            result.sort(key=lambda x: -x[2])
+            return result
+
+        def _check_targets_done():
+            return matched >= target_count or attempts >= max_attempts
 
         while matched < target_count and attempts < max_attempts:
             if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
@@ -448,6 +465,10 @@ def run_auto_generate(
 
             _set_status(message=f"Attempt {attempts}: analyzing...")
 
+            for cat, val in choices.items():
+                ac = attempt_counts[cat]
+                ac[val] = ac.get(val, 0) + 1
+
             matched_ok, vector, cos_sim, cos_dist = _match_to_identity(gen_file, embedder, centroid, assign_eps)
             if matched_ok:
                 matched += 1
@@ -461,9 +482,8 @@ def run_auto_generate(
                     mc = match_counts[cat]
                     mc[val] = mc.get(val, 0) + 1
                 log.info(
-                    "MATCH #%d: %s (attempt %d) shot=%s pose=%s",
+                    "MATCH #%d: %s (attempt %d)",
                     matched, gen_file.name, attempts,
-                    choices.get("shot", "?"), choices.get("pose", "?"),
                 )
             else:
                 try:
@@ -476,6 +496,80 @@ def run_auto_generate(
             "Autogen distribution: %s",
             {cat: match_counts.get(cat, {}) for cat in template_cats},
         )
+
+        # ── Catch-up pass for hard-to-match options ────────────────────
+        if matched < target_count:
+            underperformers = _pick_underperformers()
+            if underperformers:
+                log.warning(
+                    "Underperforming options detected (5+ attempts, 0 matches): %s",
+                    underperformers,
+                )
+                catchup_eps = assign_eps + 0.08
+                log.info(
+                    "Starting catch-up pass with eps=%.3f for underperformers",
+                    catchup_eps,
+                )
+                catchup_attempts = 0
+                catchup_max = min(max_attempts - attempts, 50)
+                while matched < target_count and catchup_attempts < catchup_max and not _check_targets_done():
+                    if _AUTOGEN_CANCEL and _AUTOGEN_CANCEL.is_set():
+                        break
+                    catchup_attempts += 1
+                    attempts += 1
+                    prompt, choices = _sample_with_distribution(templates)
+                    _set_status(
+                        matched=matched, attempts=attempts,
+                        message=f"Catch-up {catchup_attempts}/{catchup_max}: {prompt[:60]}...",
+                        last_prompt=prompt,
+                    )
+                    log.info("Catch-up [%d/%d]: %s", catchup_attempts, catchup_max, prompt)
+                    gen_path = _generate_image_via_webbduck(
+                        prompt=prompt, negative_prompt=negative_prompt,
+                        webbduck_url=webbduck_url, base_model=base_model,
+                        cfg=cfg, steps=steps, width=width, height=height,
+                        scheduler=scheduler, second_pass_model=second_pass_model,
+                        loras=loras_cfg, embeddings=embeddings_cfg,
+                    )
+                    if gen_path is None:
+                        continue
+                    gen_file = Path(gen_path)
+                    if not gen_file.exists() and webbduck_output_dir:
+                        try:
+                            if "outputs/" in str(gen_path):
+                                rel = str(gen_path).split("outputs/", 1)[1].lstrip("/")
+                                resolved = Path(webbduck_output_dir) / rel
+                                if resolved.exists():
+                                    gen_file = resolved
+                        except Exception:
+                            pass
+                    if not gen_file.exists():
+                        continue
+                    for cat, val in choices.items():
+                        ac = attempt_counts[cat]
+                        ac[val] = ac.get(val, 0) + 1
+                    matched_ok, vector, cos_sim, cos_dist = _match_to_identity(
+                        gen_file, embedder, centroid, catchup_eps,
+                    )
+                    if matched_ok:
+                        matched += 1
+                        save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                        _add_to_dataset(config, gen_file, save_identity_id, vector)
+                        for cat, val in choices.items():
+                            mc = match_counts[cat]
+                            mc[val] = mc.get(val, 0) + 1
+                        log.info("Catch-up MATCH #%d: %s", matched, gen_file.name)
+                    else:
+                        try:
+                            gen_file.unlink()
+                        except Exception:
+                            pass
+                        log.info("Catch-up no match: deleted %s", gen_file.name)
+
+                log.info(
+                    "Catch-up complete: %d extra attempts (eps=%.3f)",
+                    catchup_attempts, catchup_eps,
+                )
 
         _set_status(
             matched=matched, attempts=attempts, running=False,
