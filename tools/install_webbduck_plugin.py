@@ -167,8 +167,55 @@ def _restart_dnaduck(cmdline: list[str] | None) -> None:
 
 
 def _resolve_python() -> str:
-    import sys
-    return sys.executable
+    """Find a Python interpreter that has dnaduck modules available.
+    Checks current env first, then common conda envs."""
+    import subprocess
+
+    def _has_dnaduck(py: str) -> bool:
+        try:
+            r = subprocess.run([py, "-c", "import core.autogen, core.database"], capture_output=True, text=True, timeout=5)
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    # 1. Current Python
+    current = sys.executable
+    if _has_dnaduck(current):
+        return current
+
+    # 2. Conda run (picks whatever env is active)
+    conda_python = os.environ.get("CONDA_PREFIX", "")
+    if conda_python:
+        candidate = str(Path(conda_python) / "bin" / "python")
+        if candidate != current and _has_dnaduck(candidate):
+            return candidate
+
+    # 3. Scan common env names
+    conda_root = str(Path(conda_python).parent.parent) if conda_python else os.environ.get("CONDA_ROOT", str(Path.home() / "miniconda3"))
+    for env_name in ["dnaduck", "webbduck", "web_img"]:
+        candidate = str(Path(conda_root) / "envs" / env_name / "bin" / "python")
+        if _has_dnaduck(candidate):
+            return candidate
+
+    # 4. Try conda run with each env
+    for env_name in ["dnaduck", "webbduck", "web_img"]:
+        try:
+            r = subprocess.run(
+                ["conda", "run", "-n", env_name, "python", "-c", "import core.autogen, core.database"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                r2 = subprocess.run(
+                    ["conda", "run", "-n", env_name, "which", "python"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                candidate = r2.stdout.strip()
+                if candidate:
+                    return candidate
+        except Exception:
+            continue
+
+    return current  # last resort, will likely fail but the error will be informative
 
 
 def _parse_args() -> argparse.Namespace:
