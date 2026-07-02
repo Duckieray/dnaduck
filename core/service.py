@@ -1281,7 +1281,13 @@ def auto_generate(
     import numpy as np
     from .autogen import init_auto_generate_status, run_auto_generate
     from .database import create_identity, open_database
-    from .utils import load_config
+    from .utils import load_config, get_logger
+
+    _log = get_logger("dnaduck.service")
+    _log.warning(
+        "auto_generate called: identity_id=%s target_identity_id=%s new_character_label=%s",
+        identity_id, target_identity_id, new_character_label,
+    )
 
     resolved_target: int | None = None
     if new_character_label:
@@ -1319,6 +1325,10 @@ def auto_generate(
         },
         daemon=True,
         name=f"dnaduck-autogen-{int(identity_id)}",
+    )
+    _log.warning(
+        "Starting autogen thread: identity_id=%s target_identity_id=%s resolved_target=%s",
+        identity_id, target_identity_id, resolved_target,
     )
     thread.start()
     return get_auto_generate_status()

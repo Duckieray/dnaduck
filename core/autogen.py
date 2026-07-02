@@ -488,6 +488,10 @@ def run_auto_generate(
             if matched_ok:
                 matched += 1
                 save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                log.info(
+                    "Adding match to identity_id=%s (target was %s, fallback=%s)",
+                    save_identity_id, target_identity_id, identity_id,
+                )
                 _add_to_dataset(config, gen_file, save_identity_id, vector)
                 for cat, val in choices.items():
                     mc = match_counts[cat]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -1123,6 +1124,10 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.post("/autogen/start")
     def autogen_start(payload: AutoGenerateRequest) -> dict:
+        logging.getLogger("dnaduck.server").warning(
+            "autogen_start payload: identity_id=%s target_identity_id=%s new_character_label=%s",
+            payload.identity_id, payload.target_identity_id, payload.new_character_label,
+        )
         try:
             return auto_generate(
                 config_path=_ACTIVE_CONFIG_PATH,

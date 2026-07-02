@@ -1893,6 +1893,7 @@
       if (targetIdentityId !== undefined) body.target_identity_id = targetIdentityId;
       if (newCharacterLabel !== undefined) body.new_character_label = newCharacterLabel;
       if (Number.isFinite(assignEps)) body.assign_eps_realism = assignEps;
+      console.log("autogen start body:", JSON.stringify(body));
       const status = await post("/autogen/start", body);
       if (status.error) {
         if (prereqs) { prereqs.textContent = status.error; prereqs.style.display = ""; }
