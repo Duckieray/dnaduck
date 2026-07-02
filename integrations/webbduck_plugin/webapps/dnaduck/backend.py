@@ -1177,7 +1177,60 @@ def _connection_payload(config: dict, target: BackendTarget) -> dict:
 
 
 def _resolve_python() -> str:
-    return os.environ.get("DNADUCK_PYTHON", sys.executable)
+    """Find a Python interpreter that has dnaduck modules available.
+    Respects DNADUCK_PYTHON override, checks current env, then common conda envs."""
+    override = os.environ.get("DNADUCK_PYTHON")
+    if override:
+        return override
+
+    def _has_dnaduck(py: str) -> bool:
+        try:
+            r = subprocess.run(
+                [py, "-c", "import core.autogen, core.database; import accelerate; import toml"],
+                capture_output=True, text=True, timeout=5,
+            )
+            return r.returncode == 0
+        except Exception:
+            return False
+
+    # 1. Current Python
+    current = sys.executable
+    if _has_dnaduck(current):
+        return current
+
+    # 2. Conda prefix (active env)
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        candidate = str(Path(conda_prefix) / "bin" / "python")
+        if candidate != current and _has_dnaduck(candidate):
+            return candidate
+
+    # 3. Scan common env names
+    conda_root = str(Path(conda_prefix).parent.parent) if conda_prefix else os.environ.get("CONDA_ROOT", str(Path.home() / "miniconda3"))
+    for env_name in ["dnaduck", "webbduck", "web_img"]:
+        candidate = str(Path(conda_root) / "envs" / env_name / "bin" / "python")
+        if _has_dnaduck(candidate):
+            return candidate
+
+    # 4. Try conda run with each env
+    for env_name in ["dnaduck", "webbduck", "web_img"]:
+        try:
+            r = subprocess.run(
+                ["conda", "run", "-n", env_name, "python", "-c", "import core.autogen, core.database"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                r2 = subprocess.run(
+                    ["conda", "run", "-n", env_name, "which", "python"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                candidate = r2.stdout.strip()
+                if candidate:
+                    return candidate
+        except Exception:
+            continue
+
+    return current  # last resort
 
 
 def _load_connection_config() -> dict:
@@ -1521,11 +1574,12 @@ def _run_cli(args: list[str]) -> str:
     if proc.returncode != 0:
         hint = None
         stderr = (proc.stderr or "")[-4000:]
-        if "No module named" in stderr:
+        if "No module named" in stderr or "Missing trainer" in stderr:
             hint = (
-                "DNADuck dependencies are missing in WebbDuck's Python env. "
-                "Use remote_api mode pointing at a running DNADuck API, or set DNADUCK_PYTHON "
-                "to a Python environment where DNADuck requirements are installed."
+                "DNADuck dependencies are missing in the resolved Python env. "
+                "Set DNADUCK_PYTHON to a conda env path where DNADuck requirements are installed, "
+                "or activate the dnaduck/webbduck conda env and reinstall (pip install -r requirements.txt). "
+                "Current resolved Python: " + _resolve_python()
             )
         elif "Input folder does not exist" in stderr or "No images found in" in stderr:
             hint = (

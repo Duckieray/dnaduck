@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "saved_at": 1783024675.1175678,
+  "saved_at": 1783024875.168667,
   "jobs": [
     {
       "job_id": "42ecd39cd4d54e9994b7e5073c4e7356",
@@ -889,6 +889,28 @@
       "updated_at": 1783024675.1175508,
       "started_at": 1783024674.7534242,
       "finished_at": 1783024675.1175508,
+      "request": {
+        "output_folder": "/run/media/system/Luke/DNADuck/training/della/output",
+        "min_images": 5,
+        "identity_ids": [
+          19
+        ],
+        "prepare_dataset": true,
+        "wait_for_result": false
+      },
+      "result": null,
+      "error": "Missing trainer dependencies: accelerate. Install them in the active DNADuck Python env (example: `pip install toml accelerate`).",
+      "cancel_requested": false,
+      "resumed_from_job_id": null
+    },
+    {
+      "job_id": "09a490f9bbe444ed82824c08047715b6",
+      "operation": "train_lora",
+      "status": "failed",
+      "created_at": 1783024874.7860684,
+      "updated_at": 1783024875.1686492,
+      "started_at": 1783024874.7869365,
+      "finished_at": 1783024875.1686492,
       "request": {
         "output_folder": "/run/media/system/Luke/DNADuck/training/della/output",
         "min_images": 5,

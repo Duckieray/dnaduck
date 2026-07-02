@@ -143,18 +143,23 @@ def _kill_existing_dnaduck() -> list[str] | None:
 
 
 def _restart_dnaduck(cmdline: list[str] | None) -> None:
-    """Re-launch the dnaduck API server. Uses the previous cmdline if available,
-    otherwise falls back to a sensible default."""
+    """Re-launch the dnaduck API server.
+    Always re-resolves the Python interpreter to ensure training deps are available.
+    Uses the captured args (port, config, etc.) from the previous cmdline."""
     import subprocess
 
+    python = _resolve_python()
+    dnaduck_root = _repo_root()
+
     if cmdline:
-        print(f"Restarting with: {' '.join(cmdline)}")
-        subprocess.Popen(cmdline, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Re-use captured args (port, config, etc.) but replace the Python path
+        rest = [str(a) for a in cmdline[1:]]
+        resolved = [python] + rest
+        print(f"Restarting with: {' '.join(resolved)} (resolved python={python})")
+        subprocess.Popen(resolved, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return
 
     # Fallback: try the standard location
-    python = _resolve_python()
-    dnaduck_root = _repo_root()
     fallback = [
         python,
         str(dnaduck_root / "run_api.py"),
@@ -167,41 +172,49 @@ def _restart_dnaduck(cmdline: list[str] | None) -> None:
 
 
 def _resolve_python() -> str:
-    """Find a Python interpreter that has dnaduck modules available.
+    """Find a Python interpreter that has dnaduck modules AND training deps.
     Checks current env first, then common conda envs."""
     import subprocess
 
-    def _has_dnaduck(py: str) -> bool:
+    def _has_train_deps(py: str) -> bool:
         try:
-            r = subprocess.run([py, "-c", "import core.autogen, core.database"], capture_output=True, text=True, timeout=5)
+            r = subprocess.run(
+                [py, "-c", "import core.autogen, core.database; import accelerate, toml"],
+                capture_output=True, text=True, timeout=5,
+            )
             return r.returncode == 0
         except Exception:
             return False
 
-    # 1. Current Python
+    # 1. DNADUCK_PYTHON env override
+    override = os.environ.get("DNADUCK_PYTHON")
+    if override and _has_train_deps(override):
+        return override
+
+    # 2. Current Python
     current = sys.executable
-    if _has_dnaduck(current):
+    if _has_train_deps(current):
         return current
 
-    # 2. Conda run (picks whatever env is active)
-    conda_python = os.environ.get("CONDA_PREFIX", "")
-    if conda_python:
-        candidate = str(Path(conda_python) / "bin" / "python")
-        if candidate != current and _has_dnaduck(candidate):
+    # 3. Conda prefix (active env)
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        candidate = str(Path(conda_prefix) / "bin" / "python")
+        if candidate != current and _has_train_deps(candidate):
             return candidate
 
-    # 3. Scan common env names
-    conda_root = str(Path(conda_python).parent.parent) if conda_python else os.environ.get("CONDA_ROOT", str(Path.home() / "miniconda3"))
+    # 4. Scan common env names
+    conda_root = str(Path(conda_prefix).parent.parent) if conda_prefix else os.environ.get("CONDA_ROOT", str(Path.home() / "miniconda3"))
     for env_name in ["dnaduck", "webbduck", "web_img"]:
         candidate = str(Path(conda_root) / "envs" / env_name / "bin" / "python")
-        if _has_dnaduck(candidate):
+        if _has_train_deps(candidate):
             return candidate
 
-    # 4. Try conda run with each env
+    # 5. Try conda run with each env
     for env_name in ["dnaduck", "webbduck", "web_img"]:
         try:
             r = subprocess.run(
-                ["conda", "run", "-n", env_name, "python", "-c", "import core.autogen, core.database"],
+                ["conda", "run", "-n", env_name, "python", "-c", "import core.autogen, core.database; import accelerate, toml"],
                 capture_output=True, text=True, timeout=10,
             )
             if r.returncode == 0:
