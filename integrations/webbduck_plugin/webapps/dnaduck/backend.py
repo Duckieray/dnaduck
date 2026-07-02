@@ -120,6 +120,8 @@ class AutogenRequest(BaseModel):
     max_attempts: int = Field(default=500, ge=1, le=100000)
     assign_eps_realism: float | None = Field(default=None, ge=0.01, le=1.0)
     assign_eps_anime: float | None = Field(default=None, ge=0.01, le=1.0)
+    target_identity_id: int | None = Field(default=None, ge=1)
+    new_character_label: str | None = Field(default=None, min_length=1, max_length=100)
 
 
 class UpdateConfigRequest(BaseModel):
@@ -843,6 +845,10 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
             body["assign_eps_realism"] = float(payload.assign_eps_realism)
         if payload.assign_eps_anime is not None:
             body["assign_eps_anime"] = float(payload.assign_eps_anime)
+        if payload.target_identity_id is not None:
+            body["target_identity_id"] = int(payload.target_identity_id)
+        if payload.new_character_label is not None:
+            body["new_character_label"] = payload.new_character_label.strip()
         if target.api_base:
             return _remote_request(
                 target.api_base,
