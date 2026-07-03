@@ -77,6 +77,16 @@
 
                   <label class="form-label" for="min-images">Minimum Photos per Character</label>
                   <input class="input" id="min-images" type="number" min="1" value="5" />
+
+                  <label class="form-label" for="train-output-name">Output LoRA Name</label>
+                  <input class="input" id="train-output-name" type="text" placeholder="Leave blank for config default" />
+
+                  <label class="form-label" for="train-identity-select">Characters to Train</label>
+                  <select id="train-identity-select" class="select" multiple style="min-height:80px">
+                    <option value="">Loading characters...</option>
+                  </select>
+                  <p class="muted" style="margin-top:2px">Ctrl+click / Cmd+click to select multiple. Leave empty to train all characters.</p>
+
                   <label class="form-label toggle-row" for="use-selected-only">
                     <input id="use-selected-only" type="checkbox" checked />
                     Use only selected character groups

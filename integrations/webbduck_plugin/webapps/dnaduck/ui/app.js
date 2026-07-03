@@ -1270,14 +1270,31 @@
     await pollActivity();
   }
 
+  function getSelectedTrainingIdentityIds() {
+    const select = byId("train-identity-select");
+    if (!select) return null;
+    const ids = [];
+    for (const opt of select.options) {
+      if (opt.selected && opt.value) {
+        const id = parseInt(opt.value, 10);
+        if (Number.isFinite(id) && id > 0) ids.push(id);
+      }
+    }
+    return ids.length > 0 ? ids : null;
+  }
+
   async function trainLora() {
     const minImages = parseInt(byId("min-images")?.value || "5", 10);
     const outputFolder = normalizeOptionalPath(byId("output-folder")?.value || "");
+    const outputName = String(byId("train-output-name")?.value || "").trim() || null;
     const selectedIds = getSelectedIdsForExport();
-    if (selectedIds && !selectedIds.length) {
-      setText("training-status", "Select at least one character group first, or turn off 'Use only selected character groups'.");
+    const trainIds = getSelectedTrainingIdentityIds();
+    // Prefer the multi-select over the character-view selection
+    const identityIds = trainIds || (selectedIds && selectedIds.length ? selectedIds : null);
+    if (!identityIds) {
+      setText("training-status", "Select at least one character to train, or leave the multi-select empty to train all.");
       setText("training-detail", "");
-      addEvent("Training skipped because no character groups are selected.");
+      addEvent("Training skipped because no characters are selected.");
       return;
     }
     renderActivity({
@@ -1289,7 +1306,8 @@
     const result = await post("/train-lora", {
       output_folder: outputFolder || null,
       min_images: Number.isFinite(minImages) ? minImages : 5,
-      identity_ids: selectedIds && selectedIds.length ? selectedIds : null,
+      identity_ids: identityIds,
+      output_name: outputName,
       prepare_dataset: true,
     });
     const data = trainPayloadFromResponse(result);
@@ -1730,6 +1748,21 @@
     updateSelectedExportSummary();
   }
 
+  function _populateTrainingIdentitySelect(rows) {
+    const sel = byId("train-identity-select");
+    if (!sel) return;
+    sel.innerHTML = "";
+    for (const item of rows) {
+      const id = Number(item.identity_id || 0);
+      if (!id) continue;
+      const label = String(item.label || `Group ${id}`);
+      const o = document.createElement("option");
+      o.value = String(id);
+      o.textContent = `${label} (Group ${id})`;
+      sel.appendChild(o);
+    }
+  }
+
   function _populateIdentitySelect(selectId, rows, placeholder) {
     const sel = byId(selectId);
     if (!sel) return;
@@ -1770,6 +1803,7 @@
 
     _populateIdentitySelect("build-identity-select", rows, "Select a character...");
     _populateIdentitySelect("build-target-identity", rows, "Same as match");
+    _populateTrainingIdentitySelect(rows);
 
     setStatValues({ identities: rows.length });
 

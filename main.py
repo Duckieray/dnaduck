@@ -47,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         help="Train from dataset prepared with only this identity ID (repeat for multiple IDs)",
     )
     train_lora.add_argument(
+        "--output-name",
+        default=None,
+        help="Output LoRA filename (without .safetensors extension)",
+    )
+    train_lora.add_argument(
         "--prepare-dataset",
         action="store_true",
         help="Run export-lora before launching training.",
@@ -205,6 +210,9 @@ def main() -> None:
 
     if command == "train-lora":
         export_result = None
+        train_overrides = {"output_folder": args.output_folder}
+        if args.output_name:
+            train_overrides["kohya_output_name"] = args.output_name
         prepare_dataset = bool(args.prepare_dataset or args.min_images is not None or args.identity_ids)
         if prepare_dataset:
             export_overrides = {"output_folder": args.output_folder}
@@ -222,7 +230,7 @@ def main() -> None:
         try:
             result = trigger_lora_training(
                 config_path=config_path,
-                overrides={"output_folder": args.output_folder},
+                overrides=train_overrides,
             )
         except ValueError as exc:
             print(f"error: {exc}")

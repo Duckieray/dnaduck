@@ -69,6 +69,7 @@ class LoraTrainRequest(BaseModel):
     output_folder: str | None = None
     min_images: int | None = Field(default=None, ge=1)
     identity_ids: list[int] | None = None
+    output_name: str | None = None
     prepare_dataset: bool = False
     wait_for_result: bool = False
 
@@ -667,9 +668,12 @@ def _execute_train_request(cfg_path: Path, payload: dict, *, stop_callback=None)
     except Exception:
         pass
     _activity_update(activity_payload)
+    train_overrides = {"output_folder": _normalize_optional_path(payload.get("output_folder"))}
+    if payload.get("output_name"):
+        train_overrides["kohya_output_name"] = payload["output_name"]
     result = trigger_lora_training(
         config_path=cfg_path,
-        overrides={"output_folder": _normalize_optional_path(payload.get("output_folder"))},
+        overrides=train_overrides,
         progress_callback=_activity_update,
         stop_callback=stop_callback,
     )
@@ -1005,6 +1009,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
                 if payload.identity_ids
                 else None
             ),
+            "output_name": payload.output_name,
             "prepare_dataset": bool(payload.prepare_dataset),
             "wait_for_result": bool(payload.wait_for_result),
         }

@@ -72,6 +72,7 @@ class TrainRequest(BaseModel):
     output_folder: str | None = None
     min_images: int | None = Field(default=None, ge=1)
     identity_ids: list[int] | None = None
+    output_name: str | None = None
     prepare_dataset: bool = False
 
 
@@ -665,6 +666,7 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
                         "output_folder": payload.output_folder,
                         "min_images": payload.min_images,
                         "identity_ids": payload.identity_ids,
+                        "output_name": payload.output_name,
                         "prepare_dataset": bool(payload.prepare_dataset),
                         "wait_for_result": False,
                     },
@@ -707,6 +709,8 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
             train_args = ["train-lora"]
             if payload.output_folder:
                 train_args.extend(["--output-folder", payload.output_folder])
+            if payload.output_name:
+                train_args.extend(["--output-name", payload.output_name])
             stdout = _run_cli(train_args)
             parsed = _parse_colon_output(stdout)
             if export_result is not None:
