@@ -409,7 +409,12 @@
               <fieldset class="config-fieldset">
                 <legend>Training (kohya_ss)</legend>
                 <label class="form-label" for="cfg-base-model">Base Model Path</label>
-                <input class="input" id="cfg-base-model" type="text" />
+                <select class="select" id="cfg-base-model">
+                  <option value="">Loading checkpoints...</option>
+                </select>
+                <div id="cfg-base-model-custom-row" style="display:none;margin-top:4px">
+                  <input class="input" id="cfg-base-model-custom" type="text" placeholder="Custom checkpoint path (diffusers dir or .safetensors)" />
+                </div>
                 <label class="form-label" for="cfg-output-name">LoRA Output Name</label>
                 <input class="input" id="cfg-output-name" type="text" />
                 <label class="form-label" for="cfg-train-steps">Training Steps</label>

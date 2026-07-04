@@ -787,9 +787,56 @@
     setField("cfg-network-alpha", config.kohya_network_alpha ?? "");
     setField("cfg-batch-size", config.kohya_batch_size ?? "");
     setField("cfg-num-repeats", config.kohya_num_repeats ?? "");
-    setField("cfg-base-model", config.kohya_base_model || "");
     setField("cfg-output-name", config.kohya_output_name || "");
     setField("cfg-current-config", currentConfigName || "config.yaml");
+
+    // Populate base model dropdown from WebbDuck's meta API
+    const baseModelSelect = byId("cfg-base-model");
+    const customRow = byId("cfg-base-model-custom-row");
+    const customInput = byId("cfg-base-model-custom");
+    const currentVal = config.kohya_base_model || "";
+    populateBaseModelDropdown(currentVal);
+    async function populateBaseModelDropdown(selectedPath) {
+      try {
+        const resp = await fetch("/meta/assets/checkpoint");
+        const checkpoints = Array.isArray(resp) ? resp : (await resp.json());
+        if (!Array.isArray(checkpoints) || !checkpoints.length) {
+          baseModelSelect.innerHTML = '<option value="">No checkpoints found</option>';
+          return;
+        }
+        let html = '<option value="">— Select a checkpoint —</option>';
+        let matched = false;
+        for (const cp of checkpoints) {
+          const cpPath = String(cp.path || cp.name || "");
+          const label = String(cp.name || cpPath.split("/").pop() || "");
+          const selected = selectedPath && (cpPath === selectedPath || cpPath.endsWith(selectedPath) || selectedPath.endsWith(cpPath));
+          if (selected) matched = true;
+          html += `<option value="${escHtml(cpPath)}"${selected ? " selected" : ""}>${escHtml(label)}</option>`;
+        }
+        html += '<option value="__custom__" ' + (matched ? "" : "selected") + '>Custom path...</option>';
+        baseModelSelect.innerHTML = html;
+
+        if (!matched && selectedPath) {
+          customRow.style.display = "";
+          customInput.value = selectedPath;
+        } else {
+          customRow.style.display = "none";
+          customInput.value = "";
+        }
+      } catch (err) {
+        baseModelSelect.innerHTML = '<option value="">Checkpoints unavailable</option>';
+        console.warn("Could not load checkpoints:", err);
+      }
+    }
+    baseModelSelect.addEventListener("change", () => {
+      if (baseModelSelect.value === "__custom__") {
+        customRow.style.display = "";
+        customInput.focus();
+      } else {
+        customRow.style.display = "none";
+        customInput.value = "";
+      }
+    });
     // Environment variables
     const env = config.env && typeof config.env === "object" ? config.env : {};
     const envLines = Object.entries(env)
@@ -937,7 +984,12 @@
       for (const [id, key] of Object.entries(fields)) {
         const el = byId(id);
         if (!el) continue;
-        const val = el.value !== undefined ? el.value : el.textContent;
+        let val = el.value !== undefined ? el.value : el.textContent;
+        // Special case: base model dropdown with custom path
+        if (id === "cfg-base-model" && val === "__custom__") {
+          const customEl = byId("cfg-base-model-custom");
+          val = customEl ? customEl.value : "";
+        }
         const trimmed = String(val || "").trim();
         if (trimmed === "") continue;
         if (key === "kohya_train_steps" || key === "min_samples" || key === "lora_min_images" || key === "kohya_network_dim" || key === "kohya_network_alpha" || key === "kohya_batch_size" || key === "kohya_num_repeats") {
