@@ -1,5 +1,6 @@
 from __future__ import annotations
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -349,6 +350,33 @@ def apply_image_action(config_path: Path, image_path: Path, action: str) -> dict
         }
     finally:
         conn.close()
+
+
+def _favorites_path(config_path: Path) -> Path:
+    return config_path.resolve().parent / ".dnaduck_favorites.json"
+
+
+def get_favorites(config_path: Path) -> set[str]:
+    sp = _favorites_path(config_path)
+    if not sp.exists():
+        return set()
+    try:
+        data = json.loads(sp.read_text())
+        return set(data.get("favorites", []))
+    except Exception:
+        return set()
+
+
+def set_image_favorite(config_path: Path, image_path: str, favorite: bool) -> dict:
+    sp = _favorites_path(config_path)
+    favs = get_favorites(config_path)
+    resolved = str(Path(image_path).resolve())
+    if favorite:
+        favs.add(resolved)
+    else:
+        favs.discard(resolved)
+    sp.write_text(json.dumps({"favorites": sorted(favs)}, indent=2))
+    return {"ok": True, "image_path": resolved, "favorite": favorite}
 
 
 def recluster_noise(config_path: Path) -> dict:

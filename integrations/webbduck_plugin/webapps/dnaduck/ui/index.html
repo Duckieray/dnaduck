@@ -494,6 +494,32 @@
     </div>
   </div>
 
+  <div id="identity-lightbox" class="identity-lightbox" style="display:none">
+    <div class="identity-lightbox-backdrop"></div>
+    <div class="identity-lightbox-content">
+      <div class="identity-lightbox-top-bar">
+        <span class="identity-lightbox-counter" id="lb-counter"></span>
+        <div class="identity-lightbox-actions">
+          <button id="lb-star" class="lb-btn" title="Star / Favorite">☆</button>
+          <button id="lb-remove" class="lb-btn lb-btn-danger" title="Remove from character">✕ Remove</button>
+          <button id="lb-blacklist" class="lb-btn lb-btn-danger" title="Hide from future scans">⊘ Blacklist</button>
+          <button id="lb-download" class="lb-btn" title="Download">↓</button>
+          <button id="lb-close" class="lb-btn" title="Close">✕</button>
+        </div>
+      </div>
+      <div class="identity-lightbox-image-wrap">
+        <button id="lb-prev" class="lb-nav-btn lb-nav-prev">‹</button>
+        <div class="identity-lightbox-image-container">
+          <img id="lb-image" src="" alt="Review image" draggable="false" />
+        </div>
+        <button id="lb-next" class="lb-nav-btn lb-nav-next">›</button>
+      </div>
+      <div class="identity-lightbox-bottom-bar">
+        <span class="identity-lightbox-path" id="lb-path"></span>
+      </div>
+    </div>
+  </div>
+
   <script src="./app.js?v=3"></script>
 </body>
 

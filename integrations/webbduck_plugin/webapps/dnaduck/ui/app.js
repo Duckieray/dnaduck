@@ -1530,6 +1530,9 @@
 
       const card = document.createElement("div");
       card.className = "identity-image-card";
+      card.dataset.path = path;
+      card.dataset.name = basename(path);
+      card.dataset.status = status;
 
       const img = document.createElement("img");
       img.loading = "lazy";
@@ -1538,6 +1541,15 @@
       if (!exists) img.style.opacity = "0.35";
       img.addEventListener("error", () => {
         img.style.opacity = "0.35";
+      });
+      img.addEventListener("click", () => {
+        const cards = grid.querySelectorAll(".identity-image-card");
+        let idx = 0;
+        for (const c of cards) {
+          if (c === card) break;
+          idx++;
+        }
+        openIdentityLightbox(idx);
       });
       card.appendChild(img);
 
@@ -1639,6 +1651,216 @@
       addEvent(`Image update failed: ${error.message}`);
     }
   }
+
+  // ── Identity Lightbox (zoom, nav, star, remove, blacklist) ──────────
+
+  let lbImages = [];
+  let lbCurrentIndex = 0;
+  let lbZoomed = false;
+  let lbScale = 1;
+
+  function getIdentityLightboxData() {
+    const items = [];
+    const grid = byId("identity-images-grid");
+    if (!grid) return items;
+    const cards = grid.querySelectorAll(".identity-image-card");
+    for (const card of cards) {
+      const img = card.querySelector("img");
+      const path = card.dataset.path;
+      const name = card.dataset.name;
+      const status = card.dataset.status;
+      if (img && path) {
+        items.push({ path, name, status, imgSrc: img.src });
+      }
+    }
+    return items;
+  }
+
+  function openIdentityLightbox(index) {
+    lbImages = getIdentityLightboxData();
+    if (!lbImages.length) return;
+    lbCurrentIndex = Math.max(0, Math.min(index, lbImages.length - 1));
+    lbZoomed = false;
+    lbScale = 1;
+    renderLightboxImage();
+    byId("identity-lightbox").style.display = "flex";
+    document.body.style.overflow = "hidden";
+  }
+
+  function closeIdentityLightbox() {
+    byId("identity-lightbox").style.display = "none";
+    document.body.style.overflow = "";
+    lbZoomed = false;
+    lbScale = 1;
+  }
+
+  function renderLightboxImage() {
+    const item = lbImages[lbCurrentIndex];
+    if (!item) return;
+    const img = byId("lb-image");
+    const container = img.parentElement;
+    container.classList.remove("zoomed");
+    container.style.cursor = "zoom-in";
+    img.style.transform = "scale(1)";
+    img.style.transformOrigin = "center center";
+
+    // Reload image without cache-bust to avoid re-download,
+    // but use the full-size path directly
+    const fullUrl = item.imgSrc;
+    img.src = fullUrl;
+    img.onload = () => {
+      container.scrollTop = 0;
+      container.scrollLeft = 0;
+    };
+
+    byId("lb-counter").textContent = `${lbCurrentIndex + 1} / ${lbImages.length}`;
+    byId("lb-path").textContent = item.path;
+
+    // Update star button
+    const starBtn = byId("lb-star");
+    starBtn.textContent = item.favorite ? "★" : "☆";
+    starBtn.classList.toggle("starred", !!item.favorite);
+
+    // Refresh favorite status from server
+    refreshFavoriteStatus(item.path);
+  }
+
+  async function refreshFavoriteStatus(imagePath) {
+    try {
+      const favs = await get("/image/favorites");
+      const isFav = Array.isArray(favs) && favs.some(f => f === imagePath || f.endsWith("/" + imagePath.split("/").pop()) || f === imagePath.replace(/\\/g, "/"));
+      // Also try exact match from API
+      const item = lbImages[lbCurrentIndex];
+      if (item) item.favorite = isFav;
+      const starBtn = byId("lb-star");
+      starBtn.textContent = isFav ? "★" : "☆";
+      starBtn.classList.toggle("starred", isFav);
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  function navigateLightbox(delta) {
+    const newIdx = lbCurrentIndex + delta;
+    if (newIdx < 0 || newIdx >= lbImages.length) return;
+    lbCurrentIndex = newIdx;
+    lbZoomed = false;
+    lbScale = 1;
+    renderLightboxImage();
+  }
+
+  function toggleLightboxZoom(event) {
+    const container = byId("lb-image").parentElement;
+    const img = byId("lb-image");
+    if (!lbZoomed) {
+      lbZoomed = true;
+      lbScale = 2.5;
+      container.classList.add("zoomed");
+      container.style.cursor = "grab";
+      img.style.transform = `scale(${lbScale})`;
+      img.style.transformOrigin = "0 0";
+      // Position zoom to click point
+      if (event) {
+        const rect = container.getBoundingClientRect();
+        const x = ((event.clientX - rect.left) / rect.width) * 100;
+        const y = ((event.clientY - rect.top) / rect.height) * 100;
+        img.style.transformOrigin = `${x}% ${y}%`;
+      }
+    } else if (event && event.deltaY) {
+      // Scroll wheel while zoomed
+      const delta = event.deltaY > 0 ? -0.15 : 0.15;
+      lbScale = Math.max(1, Math.min(6, lbScale + delta));
+      img.style.transform = `scale(${lbScale})`;
+    } else {
+      lbZoomed = false;
+      lbScale = 1;
+      container.classList.remove("zoomed");
+      container.style.cursor = "zoom-in";
+      img.style.transform = "scale(1)";
+      img.style.transformOrigin = "center center";
+    }
+  }
+
+  // ── Wire lightbox events ─────────────────────────────────
+
+  byId("lb-close")?.addEventListener("click", closeIdentityLightbox);
+  byId("lb-prev")?.addEventListener("click", () => navigateLightbox(-1));
+  byId("lb-next")?.addEventListener("click", () => navigateLightbox(1));
+  byId("lb-image")?.parentElement?.addEventListener("click", (e) => {
+    if (e.target === byId("lb-image") || e.target.classList.contains("identity-lightbox-image-container")) {
+      toggleLightboxZoom(e);
+    }
+  });
+  byId("lb-image")?.parentElement?.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    toggleLightboxZoom(e);
+  }, { passive: false });
+
+  // Keyboard nav
+  document.addEventListener("keydown", (e) => {
+    if (byId("identity-lightbox").style.display !== "flex") return;
+    if (e.key === "Escape") closeIdentityLightbox();
+    if (e.key === "ArrowLeft") navigateLightbox(-1);
+    if (e.key === "ArrowRight") navigateLightbox(1);
+  });
+
+  // Star / Favorite
+  byId("lb-star")?.addEventListener("click", async () => {
+    const item = lbImages[lbCurrentIndex];
+    if (!item) return;
+    const isFav = byId("lb-star").classList.contains("starred");
+    const newFav = !isFav;
+    try {
+      await post("/image/favorite", { image_path: item.path, favorite: newFav });
+      item.favorite = newFav;
+      byId("lb-star").textContent = newFav ? "★" : "☆";
+      byId("lb-star").classList.toggle("starred", newFav);
+      addEvent(newFav ? "Starred image" : "Unstarred image");
+    } catch (err) {
+      addEvent(`Star failed: ${err.message}`);
+    }
+  });
+
+  // Remove
+  byId("lb-remove")?.addEventListener("click", async () => {
+    const item = lbImages[lbCurrentIndex];
+    if (!item) return;
+    await runImageAction(item.path, "remove");
+    // Refresh lightbox data
+    const prevLen = lbImages.length;
+    lbImages = getIdentityLightboxData();
+    if (lbImages.length === 0) {
+      closeIdentityLightbox();
+      return;
+    }
+    if (lbCurrentIndex >= lbImages.length) lbCurrentIndex = lbImages.length - 1;
+    renderLightboxImage();
+  });
+
+  // Blacklist
+  byId("lb-blacklist")?.addEventListener("click", async () => {
+    const item = lbImages[lbCurrentIndex];
+    if (!item) return;
+    await runImageAction(item.path, "blacklist");
+    const prevLen = lbImages.length;
+    lbImages = getIdentityLightboxData();
+    if (lbImages.length === 0) {
+      closeIdentityLightbox();
+      return;
+    }
+    if (lbCurrentIndex >= lbImages.length) lbCurrentIndex = lbImages.length - 1;
+    renderLightboxImage();
+  });
+
+  // Download
+  byId("lb-download")?.addEventListener("click", () => {
+    const item = lbImages[lbCurrentIndex];
+    if (!item) return;
+    const a = document.createElement("a");
+    a.href = item.imgSrc;
+    a.download = item.name || "image";
+    a.click();
+  });
 
   async function saveIdentityLabel(clearLabel) {
     const feedback = byId("identity-detail-feedback");

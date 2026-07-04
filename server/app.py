@@ -84,6 +84,11 @@ class ImageActionRequest(BaseModel):
     action: str = Field(..., description="remove | blacklist | restore")
 
 
+class ImageFavoriteRequest(BaseModel):
+    image_path: str
+    favorite: bool = True
+
+
 class ReassignImageRequest(BaseModel):
     image_path: str
     identity_id: int = Field(..., ge=1)
@@ -1073,6 +1078,19 @@ def create_app(config_path: str | None = None) -> FastAPI:
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Image action failed: {exc}") from exc
 
+    @app.post("/image/favorite")
+    def image_favorite(payload: ImageFavoriteRequest) -> dict:
+        from core.service import set_image_favorite
+
+        image_path = _normalize_optional_path(payload.image_path)
+        if not image_path:
+            raise HTTPException(status_code=400, detail="image_path is required")
+        return set_image_favorite(
+            config_path=_ACTIVE_CONFIG_PATH,
+            image_path=str(image_path),
+            favorite=bool(payload.favorite),
+        )
+
     @app.post("/image/reassign")
     def image_reassign(payload: ReassignImageRequest) -> dict:
         image_path = _normalize_optional_path(payload.image_path)
@@ -1195,6 +1213,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
             }
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    @app.get("/image/favorites")
+    def list_favorites() -> list[str]:
+        from core.service import get_favorites
+
+        return sorted(get_favorites(_ACTIVE_CONFIG_PATH))
 
     @app.get("/image")
     def image(path: str = Query(...)) -> FileResponse:

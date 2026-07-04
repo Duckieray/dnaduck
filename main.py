@@ -81,6 +81,13 @@ def parse_args() -> argparse.Namespace:
     image_action.add_argument("action", type=str, help="remove | blacklist | restore")
     image_action.add_argument("image_path", type=Path, help="Image path")
 
+    image_favorite = subparsers.add_parser("image-favorite", help="Mark/unmark image as favorite")
+    image_favorite.add_argument("image_path", type=Path, help="Image path")
+    image_favorite.add_argument("--favorite", action="store_true", help="Mark as favorite")
+    image_favorite.add_argument("--unfavorite", action="store_true", help="Unmark as favorite")
+
+    subparsers.add_parser("list-favorites", help="List all favorited images")
+
     subparsers.add_parser("images", help="List tracked images")
 
     list_unassigned = subparsers.add_parser("list-unassigned", help="List unassigned (noise/no_face) images")
@@ -323,6 +330,25 @@ def main() -> None:
     if command == "count-unassigned":
         result = count_unassigned(config_path=config_path)
         print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "image-favorite":
+        from core.service import set_image_favorite, get_favorites
+
+        fav = bool(args.favorite) and not bool(args.unfavorite)
+        result = set_image_favorite(
+            config_path=config_path,
+            image_path=str(args.image_path),
+            favorite=fav,
+        )
+        print(json.dumps(result, ensure_ascii=True))
+        return
+
+    if command == "list-favorites":
+        from core.service import get_favorites
+
+        favs = sorted(get_favorites(config_path))
+        print(json.dumps(list(favs), ensure_ascii=True))
         return
 
     if command == "reassign":

@@ -106,6 +106,11 @@ class ImageActionRequest(BaseModel):
     action: str = Field(..., description="remove | blacklist | restore")
 
 
+class ImageFavoriteRequest(BaseModel):
+    image_path: str
+    favorite: bool = True
+
+
 class ReassignImageRequest(BaseModel):
     image_path: str
     identity_id: int = Field(..., ge=1)
@@ -453,6 +458,31 @@ def get_router(_plugin_manifest: dict | None = None) -> APIRouter:
         if not isinstance(result, dict):
             raise HTTPException(status_code=500, detail="DNADuck image action returned invalid output.")
         return {"ok": bool(result.get("ok", False)), "result": result}
+
+    @router.post("/image/favorite")
+    def image_favorite(payload: ImageFavoriteRequest) -> dict:
+        target = _resolve_backend_target(start_managed=True)
+        if target.api_base:
+            return _remote_request(
+                target.api_base,
+                "POST",
+                "/image/favorite",
+                {"image_path": payload.image_path, "favorite": bool(payload.favorite)},
+            )
+        stdout = _run_cli([
+            "image-favorite",
+            "--favorite" if bool(payload.favorite) else "--unfavorite",
+            payload.image_path,
+        ])
+        return _parse_json_output(stdout)
+
+    @router.get("/image/favorites")
+    def list_favorites() -> list[str]:
+        target = _resolve_backend_target(start_managed=True)
+        if target.api_base:
+            return _remote_request(target.api_base, "GET", "/image/favorites")
+        stdout = _run_cli(["list-favorites"])
+        return _parse_json_output(stdout)
 
     @router.get("/image")
     def image(path: str = Query(...)) -> Response:

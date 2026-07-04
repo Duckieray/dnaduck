@@ -35,3 +35,4 @@ Thumbs.db
 .vscode/
 .dnaduck_autogen_stats.json
 .dnaduck_train_jobs.json
+.dnaduck_favorites.json
