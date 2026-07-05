@@ -188,6 +188,7 @@ def _generate_image_via_webbduck(
     second_pass_model: str,
     loras: list | None = None,
     embeddings: list | None = None,
+    identity_adapter: dict | None = None,
 ) -> str | None:
     import json
     url = f"{webbduck_url.rstrip('/')}/test"
@@ -210,6 +211,22 @@ def _generate_image_via_webbduck(
     if embeddings:
         params["embeddings"] = json.dumps(embeddings)
         log.info("Sending embeddings to WebbDuck: %s", params["embeddings"])
+    if identity_adapter and identity_adapter.get("enabled"):
+        # Resolve reference image paths to absolute paths before sending
+        adapter_cfg = dict(identity_adapter)
+        dnaduck_root = Path(__file__).resolve().parent.parent
+        refs = adapter_cfg.get("reference_images", [])
+        if refs:
+            abs_refs = []
+            for ref in refs:
+                p = Path(ref)
+                if not p.is_absolute():
+                    p = dnaduck_root / p
+                abs_refs.append(str(p.resolve()))
+            adapter_cfg["reference_images"] = abs_refs
+        params["identity_adapter"] = json.dumps(adapter_cfg)
+        log.info("Sending identity_adapter to WebbDuck: %s", params["identity_adapter"])
+        
     data = urllib.parse.urlencode(params).encode()
     req = urllib.request.Request(url, data=data, method="POST")
     try:
@@ -230,37 +247,68 @@ def _match_to_identity(
     embedder: FaceEmbedder,
     identity_centroid: np.ndarray,
     assign_eps: float,
-) -> tuple[bool, np.ndarray | None, float, float]:
+    matching_config: dict | None = None,
+    anchor_embeddings: list[np.ndarray] | None = None,
+) -> tuple[str, np.ndarray | None, float, float]:
     array_bgr = cv2.imread(str(image_path))
     if array_bgr is None:
         log.warning("Autogen: cv2.imread returned None for %s", image_path)
-        return False, None, 0.0, 1.0
+        return "reject", None, 0.0, 1.0
     loaded = LoadedImage(path=image_path, array_bgr=array_bgr)
     result = embedder.extract([loaded])
     if str(image_path) not in [str(p) for p in result.embedded_paths]:
         log.warning("Autogen: no face detected in %s", image_path)
-        return False, None, 0.0, 1.0
+        return "reject", None, 0.0, 1.0
 
     paths_str = [str(p) for p in result.embedded_paths]
     idx = paths_str.index(str(image_path))
     vector = result.embeddings[idx]
-    cos_sim = float(np.clip(np.dot(vector, identity_centroid), -1.0, 1.0))
-    cos_dist = 1.0 - cos_sim
 
-    log.warning(
-        "Autogen match check: file=%s cos_sim=%.4f cos_dist=%.4f threshold=%.4f matched=%s",
-        image_path.name,
-        cos_sim,
-        cos_dist,
-        assign_eps,
-        cos_dist <= assign_eps,
-    )
+    if matching_config and matching_config.get("mode") == "anchor_set" and anchor_embeddings:
+        distances = []
+        for anchor in anchor_embeddings:
+            sim = float(np.clip(np.dot(vector, anchor), -1.0, 1.0))
+            distances.append(1.0 - sim)
+        
+        median_dist = float(np.median(distances))
+        max_dist = float(np.max(distances))
+        
+        accept_threshold = float(matching_config.get("accept_threshold", 0.22))
+        hard_max_threshold = float(matching_config.get("hard_max_threshold", 0.26))
+        
+        review_band = matching_config.get("review_band", {})
+        review_min = float(review_band.get("min", 0.22))
+        review_max = float(review_band.get("max", 0.26))
+        
+        log.warning(
+            "Autogen anchor match check: file=%s median_dist=%.4f max_dist=%.4f accept_thresh=%.4f max_thresh=%.4f",
+            image_path.name, median_dist, max_dist, accept_threshold, hard_max_threshold
+        )
+        
+        if median_dist <= accept_threshold and max_dist <= hard_max_threshold:
+            return "accept", vector, 1.0 - median_dist, median_dist
+        elif review_min <= median_dist <= review_max:
+            return "review", vector, 1.0 - median_dist, median_dist
+        else:
+            return "reject", vector, 1.0 - median_dist, median_dist
+    else:
+        cos_sim = float(np.clip(np.dot(vector, identity_centroid), -1.0, 1.0))
+        cos_dist = 1.0 - cos_sim
 
-    matched = cos_dist <= assign_eps
-    return matched, vector, cos_sim, cos_dist
+        log.warning(
+            "Autogen match check: file=%s cos_sim=%.4f cos_dist=%.4f threshold=%.4f matched=%s",
+            image_path.name,
+            cos_sim,
+            cos_dist,
+            assign_eps,
+            cos_dist <= assign_eps,
+        )
+
+        matched = cos_dist <= assign_eps
+        return "accept" if matched else "reject", vector, cos_sim, cos_dist
 
 
-def _add_to_dataset(config: dict, image_path: Path, identity_id: int, embedding: np.ndarray) -> None:
+def _add_to_dataset(config: dict, image_path: Path, identity_id: int | None, embedding: np.ndarray, status: str = "assigned") -> None:
     import hashlib
     from .database import (
         open_database,
@@ -280,12 +328,14 @@ def _add_to_dataset(config: dict, image_path: Path, identity_id: int, embedding:
             sha256=sha,
             size_bytes=stat.st_size,
             mtime=stat.st_mtime,
-            status="assigned",
-            identity_id=int(identity_id),
+            status=status,
+            identity_id=identity_id,
             embedding=embedding,
             face_score=None,
         )
-        rebuild_identity_stats(conn)
+        if identity_id is not None and status == "assigned":
+            rebuild_identity_stats(conn, identity_id)
+        conn.commit()
     finally:
         conn.close()
 
@@ -410,6 +460,9 @@ def run_auto_generate(
         embeddings_cfg: list[dict] = []
         if ag.get("embeddings") and isinstance(ag["embeddings"], list):
             embeddings_cfg = [e for e in ag["embeddings"] if isinstance(e, dict) and e.get("name")]
+            
+        identity_adapter = ag.get("identity_adapter", {})
+        
         mode = str(config.get("mode", "realism"))
         eps_r = float(ag.get("assign_eps_realism", config.get("assign_eps_realism", 0.60)))
         eps_a = float(ag.get("assign_eps_anime", config.get("assign_eps_anime", 0.75)))
@@ -429,6 +482,28 @@ def run_auto_generate(
 
         embedder = FaceEmbedder(config)
         templates = _load_prompt_templates(config)
+
+        matching_config = config.get("matching", {})
+        anchor_embeddings = []
+        if matching_config.get("mode") == "anchor_set":
+            dnaduck_root = Path(__file__).resolve().parent.parent
+            for anchor_path_str in matching_config.get("anchor_images", []):
+                anchor_path = Path(anchor_path_str)
+                if not anchor_path.is_absolute():
+                    anchor_path = (dnaduck_root / anchor_path).resolve()
+                else:
+                    anchor_path = anchor_path.resolve()
+                if not anchor_path.exists():
+                    log.warning(f"Anchor image not found: {anchor_path}")
+                    continue
+                a_bgr = cv2.imread(str(anchor_path))
+                if a_bgr is not None:
+                    ld = LoadedImage(path=anchor_path, array_bgr=a_bgr)
+                    res = embedder.extract([ld])
+                    if res.embeddings:
+                        anchor_embeddings.append(res.embeddings[0])
+            if not anchor_embeddings:
+                log.warning("Anchor set mode enabled but no valid anchor embeddings could be extracted. Falling back to centroid.")
 
         log.info(
             "Auto-generate config: basic_prompt=%r loras=%r embeddings=%r",
@@ -516,6 +591,7 @@ def run_auto_generate(
                 second_pass_model=second_pass_model,
                 loras=loras_cfg,
                 embeddings=embeddings_cfg,
+                identity_adapter=identity_adapter,
             )
             if gen_path is None:
                 log.warning("Generation returned no image (attempt %d)", attempts)
@@ -543,15 +619,17 @@ def run_auto_generate(
                 ac = attempt_counts[cat]
                 ac[val] = ac.get(val, 0) + 1
 
-            matched_ok, vector, cos_sim, cos_dist = _match_to_identity(gen_file, embedder, centroid, assign_eps)
-            if matched_ok:
+            match_status, vector, cos_sim, cos_dist = _match_to_identity(
+                gen_file, embedder, centroid, assign_eps, matching_config, anchor_embeddings
+            )
+            if match_status == "accept":
                 matched += 1
                 save_identity_id = target_identity_id if target_identity_id is not None else identity_id
                 log.info(
                     "Adding match to identity_id=%s (target was %s, fallback=%s)",
                     save_identity_id, target_identity_id, identity_id,
                 )
-                _add_to_dataset(config, gen_file, save_identity_id, vector)
+                _add_to_dataset(config, gen_file, save_identity_id, vector, status="assigned")
                 for cat, val in choices.items():
                     mc = match_counts[cat]
                     mc[val] = mc.get(val, 0) + 1
@@ -559,6 +637,10 @@ def run_auto_generate(
                     "MATCH #%d: %s (attempt %d)",
                     matched, gen_file.name, attempts,
                 )
+            elif match_status == "review":
+                save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                log.info("Match hit review band: %s (attempt %d)", gen_file.name, attempts)
+                _add_to_dataset(config, gen_file, save_identity_id, vector, status="unassigned")
             else:
                 try:
                     gen_file.unlink()
@@ -627,6 +709,7 @@ def run_auto_generate(
                                 cfg=cfg, steps=steps, width=width, height=height,
                                 scheduler=scheduler, second_pass_model=second_pass_model,
                                 loras=loras_cfg, embeddings=embeddings_cfg,
+                                identity_adapter=identity_adapter,
                             )
                             if gen_path is None:
                                 continue
@@ -645,18 +728,22 @@ def run_auto_generate(
                             for cat, val in choices.items():
                                 ac = attempt_counts[cat]
                                 ac[val] = ac.get(val, 0) + 1
-                            matched_ok, vector, cos_sim, cos_dist = _match_to_identity(
-                                gen_file, embedder, centroid, current_eps,
+                            match_status, vector, cos_sim, cos_dist = _match_to_identity(
+                                gen_file, embedder, centroid, current_eps, matching_config, anchor_embeddings
                             )
-                            if matched_ok:
+                            if match_status == "accept":
                                 matched += 1
                                 batch_matched += 1
                                 save_identity_id = target_identity_id if target_identity_id is not None else identity_id
-                                _add_to_dataset(config, gen_file, save_identity_id, vector)
+                                _add_to_dataset(config, gen_file, save_identity_id, vector, status="assigned")
                                 for cat, val in choices.items():
                                     mc = match_counts[cat]
                                     mc[val] = mc.get(val, 0) + 1
                                 log.info("Catch-up MATCH #%d: %s (eps=%.3f)", matched, gen_file.name, current_eps)
+                            elif match_status == "review":
+                                save_identity_id = target_identity_id if target_identity_id is not None else identity_id
+                                log.info("Catch-up match hit review band: %s (eps=%.3f)", gen_file.name, current_eps)
+                                _add_to_dataset(config, gen_file, save_identity_id, vector, status="unassigned")
                             else:
                                 try:
                                     gen_file.unlink()
