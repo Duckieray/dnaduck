@@ -760,9 +760,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
     configure_logging("INFO")  # ensure root logger is setup before any autogen/etc logging
 
     app = FastAPI(title="DNADuck API", version="0.1.0")
-    cfg_path = Path(config_path or os.environ.get("DNADUCK_CONFIG", "config.yaml")).resolve()
     global _ACTIVE_CONFIG_PATH
-    _ACTIVE_CONFIG_PATH = cfg_path
+    # Check for persisted active config file first
+    default_config = Path(config_path or os.environ.get("DNADUCK_CONFIG", "config.yaml")).resolve()
+    active_state_file = default_config.parent / ".dnaduck_active_config"
+    if active_state_file.exists():
+        persisted = active_state_file.read_text("utf-8").strip()
+        if persisted:
+            persisted_path = (default_config.parent / persisted).resolve()
+            if persisted_path.exists():
+                default_config = persisted_path
+    _ACTIVE_CONFIG_PATH = default_config
     _load_train_jobs_state(_ACTIVE_CONFIG_PATH)
 
     @app.get("/health")
@@ -1267,6 +1275,12 @@ def create_app(config_path: str | None = None) -> FastAPI:
         if not new_path.exists():
             raise HTTPException(status_code=404, detail=f"Config file not found: {payload.config}")
         _ACTIVE_CONFIG_PATH = new_path
+        # Persist so it survives restart
+        try:
+            state_file = root / ".dnaduck_active_config"
+            state_file.write_text(payload.config, "utf-8")
+        except Exception:
+            pass
         _load_train_jobs_state(_ACTIVE_CONFIG_PATH)
         return {"ok": True, "config": str(new_path)}
 

@@ -296,6 +296,9 @@ def run_lora_export(config: dict) -> dict:
         selected_ids = [int(v) for v in identity_ids if int(v) > 0]
     overwrite = bool(config.get("overwrite_output", True))
 
+    training_tokens = config.get("training_tokens", {}) or {}
+    training_caption_template = str(config.get("training_caption_template", "{trigger}") or "{trigger}").strip()
+
     conn = open_database(db_path)
     try:
         return export_lora_dataset(
@@ -305,6 +308,8 @@ def run_lora_export(config: dict) -> dict:
             min_images=min_images,
             identity_ids=selected_ids,
             overwrite=overwrite,
+            training_tokens=training_tokens,
+            caption_template=training_caption_template,
             face_crop=face_crop,
             face_crop_size=face_crop_size,
             face_crop_padding=face_crop_padding,

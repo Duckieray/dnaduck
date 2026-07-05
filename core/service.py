@@ -108,11 +108,12 @@ def export_lora(config_path: Path, overrides: dict | None = None) -> dict:
     return {
         "identities_exported": int(result["identities"]),
         "images_exported": int(result["images"]),
-        "caption_mode": str(result.get("caption_mode", "identity_token")),
+        "caption_mode": str(result.get("caption_mode", "template_based")),
+        "caption_template": str(result.get("caption_template", "{trigger}")),
         "image_preprocess": str(result.get("image_preprocess", "none")),
         "requested_identity_ids": list(result.get("requested_identity_ids", [])),
         "exported_identity_ids": list(result.get("exported_identity_ids", [])),
-        "rich_captioning_status": "coming_soon",
+        "rich_captioning_status": "template_based",
         "output_folder": str(Path(config["output_folder"]).resolve() / "lora_export"),
     }
 

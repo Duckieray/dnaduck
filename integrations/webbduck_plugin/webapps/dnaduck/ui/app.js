@@ -16,6 +16,7 @@
   // Available LoRA / embedding names fetched from WebbDuck (populated by Fetch button)
   let _autogenLoraOptions = [];
   let _autogenEmbeddingOptions = [];
+  let _trainingTokens = {};
   let selectedIdentityId = null;
   let selectedIdentityOffset = 0;
   let selectedIdentityTotal = 0;
@@ -788,6 +789,7 @@
     setField("cfg-batch-size", config.kohya_batch_size ?? "");
     setField("cfg-num-repeats", config.kohya_num_repeats ?? "");
     setField("cfg-output-name", config.kohya_output_name || "");
+    setField("cfg-caption-template", config.training_caption_template || "");
     setField("cfg-current-config", currentConfigName || "config.yaml");
 
     // Populate base model dropdown from WebbDuck's meta API
@@ -861,6 +863,8 @@
     renderAutogenEmbeddings(Array.isArray(ag.embeddings) ? ag.embeddings : []);
     _populateAutogenSelect("cfg-autogen-model", ag.base_model || "");
     _populateAutogenSelect("cfg-autogen-scheduler", ag.scheduler || "");
+    // Load training tokens
+    _trainingTokens = (config.training_tokens && typeof config.training_tokens === "object") ? { ...config.training_tokens } : {};
   }
 
   function _populateAutogenSelect(id, currentValue) {
@@ -980,6 +984,7 @@
         "cfg-num-repeats": "kohya_num_repeats",
         "cfg-base-model": "kohya_base_model",
         "cfg-output-name": "kohya_output_name",
+        "cfg-caption-template": "training_caption_template",
       };
       for (const [id, key] of Object.entries(fields)) {
         const el = byId(id);
@@ -1026,6 +1031,9 @@
       }
 
       _gatherAutogenUpdates(updates);
+      if (Object.keys(_trainingTokens).length > 0) {
+        updates.training_tokens = { ..._trainingTokens };
+      }
       await put("/config", { updates });
       addEvent("Config saved");
       await loadCurrentConfig();
@@ -1560,6 +1568,10 @@
 
     const label = detail.label ? String(detail.label) : "(not named yet)";
     if (labelInput) labelInput.value = detail.label ? String(detail.label) : "";
+    const tokenInput = byId("identity-token-input");
+    if (tokenInput) {
+      tokenInput.value = _trainingTokens[String(detail.identity_id)] || "";
+    }
     const loadedCount = Math.min(selectedIdentityOffset, selectedIdentityTotal);
     meta.textContent =
       `Group ${detail.identity_id} | ${detail.member_count ?? 0} photos | Name: ${label} | Showing ${loadedCount}/${selectedIdentityTotal}`;
@@ -1936,6 +1948,33 @@
     } catch (error) {
       if (feedback) feedback.textContent = `Could not save name: ${error.message}`;
       addEvent(`Name update failed: ${error.message}`);
+    }
+  }
+
+  async function saveTrainingToken() {
+    const feedback = byId("identity-detail-feedback");
+    const tokenInput = byId("identity-token-input");
+    if (!selectedIdentityId) return;
+    const token = tokenInput ? String(tokenInput.value || "").trim() : "";
+    if (token) {
+      _trainingTokens[String(selectedIdentityId)] = token;
+    } else {
+      delete _trainingTokens[String(selectedIdentityId)];
+    }
+    try {
+      // Save config with updated training_tokens
+      const config = currentConfig || await get("/config");
+      const updates = { training_tokens: { ..._trainingTokens } };
+      await put("/config", { updates });
+      if (feedback) {
+        feedback.textContent = token
+          ? `Saved training token: ${token}`
+          : "Training token cleared.";
+      }
+      addEvent(token ? `Training token for ${selectedIdentityId} → ${token}` : `Cleared training token for ${selectedIdentityId}.`);
+    } catch (error) {
+      if (feedback) feedback.textContent = `Could not save token: ${error.message}`;
+      addEvent(`Token save failed: ${error.message}`);
     }
   }
 
@@ -2653,6 +2692,25 @@
         await saveIdentityLabel(false);
       } finally {
         setButtonBusy("identity-label-save-btn", false, "Save Name");
+      }
+    });
+
+    byId("identity-token-save-btn")?.addEventListener("click", async () => {
+      setButtonBusy("identity-token-save-btn", true, "Saving...");
+      try {
+        await saveTrainingToken();
+      } finally {
+        setButtonBusy("identity-token-save-btn", false, "Save Token");
+      }
+    });
+    byId("identity-token-input")?.addEventListener("keydown", async (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      setButtonBusy("identity-token-save-btn", true, "Saving...");
+      try {
+        await saveTrainingToken();
+      } finally {
+        setButtonBusy("identity-token-save-btn", false, "Save Token");
       }
     });
 

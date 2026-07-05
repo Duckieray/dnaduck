@@ -145,6 +145,8 @@ def export_lora_dataset(
     face_crop_padding: float = 0.35,
     face_crop_model_name: str = "buffalo_l",
     face_crop_use_gpu: bool = False,
+    training_tokens: dict | None = None,
+    caption_template: str = "{trigger}",
 ) -> dict:
     root = output_folder / "lora_export"
     ensure_clean_dir(root, overwrite=overwrite)
@@ -214,13 +216,17 @@ def export_lora_dataset(
                 transform = f"face_crop_{cropper.target_size}"
             else:
                 _materialize_link(source, destination, link_mode)
+            caption_tokens = dict(training_tokens or {})
+            trigger_raw = caption_tokens.get(str(identity_id)) or caption_tokens.get(label) or ""
+            trigger = str(trigger_raw).strip()
+            caption = caption_template.replace("{trigger}", trigger or label).replace("{label}", label)
             caption_path = destination.with_suffix(".txt")
-            caption_path.write_text(f"{label}\n", encoding="utf-8")
+            caption_path.write_text(f"{caption}\n", encoding="utf-8")
             metadata_rows.append(
                 {
                     "file_name": destination.name,
                     "source_path": str(source),
-                    "caption": label,
+                    "caption": caption,
                     "identity_id": identity_id,
                     "transform": transform,
                 }
@@ -243,7 +249,8 @@ def export_lora_dataset(
     return {
         "identities": identity_count,
         "images": image_count,
-        "caption_mode": "identity_token",
+        "caption_mode": "template_based",
+        "caption_template": caption_template,
         "image_preprocess": (
             f"face_crop_{cropper.target_size}" if cropper.enabled else "none"
         ),

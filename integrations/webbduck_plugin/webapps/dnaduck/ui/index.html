@@ -233,6 +233,13 @@
                   <button id="identity-label-clear-btn" class="btn btn-secondary btn-sm" type="button">Clear</button>
                 </div>
               </div>
+              <div class="identity-label-row">
+                <label class="form-label" for="identity-token-input">Training Trigger Token</label>
+                <div class="identity-label-actions">
+                  <input class="input" id="identity-token-input" type="text" placeholder="e.g. ohwx" />
+                  <button id="identity-token-save-btn" class="btn btn-primary btn-sm" type="button">Save Token</button>
+                </div>
+              </div>
               <p class="muted" id="identity-detail-meta">Select a character row to preview images.</p>
               <div id="identity-images-grid" class="identity-images-grid"></div>
               <p class="muted status-note" id="identity-detail-feedback">Select a character group to begin.</p>
@@ -435,6 +442,9 @@
                 <input class="input" id="cfg-batch-size" type="number" min="1" />
                 <label class="form-label" for="cfg-num-repeats">Num Repeats</label>
                 <input class="input" id="cfg-num-repeats" type="number" min="1" />
+                <label class="form-label" for="cfg-caption-template">Caption Template</label>
+                <input class="input" id="cfg-caption-template" type="text" placeholder="{trigger}" />
+                <p class="muted" style="margin-top:-2px;font-size:11px">Use <code>{trigger}</code> for the trigger token, <code>{label}</code> for the identity label. Example: <code>{trigger}, {label}, person, portrait, high quality</code></p>
               </fieldset>
 
               <fieldset class="config-fieldset">
