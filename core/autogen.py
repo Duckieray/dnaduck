@@ -334,7 +334,7 @@ def _add_to_dataset(config: dict, image_path: Path, identity_id: int | None, emb
             face_score=None,
         )
         if identity_id is not None and status == "assigned":
-            rebuild_identity_stats(conn, identity_id)
+            rebuild_identity_stats(conn)
         conn.commit()
     finally:
         conn.close()
