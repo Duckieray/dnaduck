@@ -626,6 +626,18 @@
     try {
       currentConfig = await get("/config");
       renderConfigEditor(currentConfig);
+      
+      const isAnchorMode = currentConfig?.matching?.mode === "anchor_set";
+      const isFaceID = currentConfig?.auto_generate?.identity_adapter?.enabled === true;
+      
+      const anchorNotice = byId("build-strict-mode-notice");
+      const faceidNotice = byId("build-faceid-notice");
+      const epsSlider = byId("build-eps");
+      
+      if (anchorNotice) anchorNotice.style.display = isAnchorMode ? "" : "none";
+      if (faceidNotice) faceidNotice.style.display = isFaceID ? "" : "none";
+      if (epsSlider) epsSlider.disabled = isAnchorMode;
+      
       return currentConfig;
     } catch (error) {
       return {};
